@@ -80,6 +80,53 @@ nch '\357\277\277'         'U+FFFF'
 nch '\364\220\200\200'     'U+110000 would be above the Unicode range'
 nch '\376\377'            'a UTF-16 BOM read as bytes'
 
+# --- hand-written accept/reject table --------------------------------------
+# A deliberate overlap with the conformance suite.  The suite is the authority,
+# but if the tarball ever fails to extract these still fail when the parser
+# breaks, instead of the whole run quietly passing on nothing.
+printf '\n--- documents: elements, tags, attributes, nesting\n'
+acc() { if printf '%b' "$1" | ./xmlc 2>/dev/null; then ok "accept $2"; else nok "accept $2"; fi; }
+rej() { if printf '%b' "$1" | ./xmlc 2>/dev/null; then nok "reject $2"; else ok "reject $2"; fi; }
+
+acc '<a/>'                  'empty element tag'
+acc '<a></a>'               'start and end tag'
+acc '<a><b/><b/></a>'       'siblings'
+acc '<a><b><c/></b></a>'    'nesting'
+acc '<a>text</a>'           'character data'
+acc '<a b="1" c="2"/>'      'two attributes'
+acc "<a b='1'/>"            'single-quoted attribute value'
+acc '<a b=""/>'             'empty attribute value'
+acc '<a  b="1"  />'         'extra whitespace in a start tag'
+acc '<a\n/>'                'newline inside a start tag'
+acc '<a></a\t\n >'          'whitespace before the end tag bracket'
+acc ' \t\r\n<a/>\t\n '      'whitespace around the root'
+acc '<a:b c:d="1"/>'        'colons are Name characters in XML itself'
+acc '<_/>'                  'underscore element name'
+rej ''                      'empty document'
+rej '  '                    'whitespace only'
+rej '<a>'                   'unclosed root'
+rej '</a>'                  'end tag with nothing open'
+rej '<a></b>'               'mismatched end tag'
+rej '<a><b></a></b>'        'improperly nested'
+rej '<a/><b/>'              'two root elements'
+rej '<a/>x'                 'character data after the root'
+rej 'x<a/>'                 'character data before the root'
+rej '<a/'                   'truncated empty element tag'
+rej '<a'                    'truncated start tag'
+rej '<'                     'a lone left angle bracket'
+rej '<a b="1" b="2"/>'      'the same attribute twice (WFC: Unique Att Spec)'
+rej '<a b="<"/>'            'a literal < in an attribute value'
+rej '<a b=1/>'              'unquoted attribute value'
+rej '<a b="1\047"/>'        'mismatched attribute value quotes'
+rej '<a b/>'                'attribute with no value'
+rej '<a b="1"c="2"/>'       'no whitespace between attributes'
+rej '<a/ >'                 'space inside the empty element close'
+rej '< a/>'                 'space before the element name'
+rej '<a>\001</a>'           'a control character in character data'
+rej '<a b="\001"/>'         'a control character in an attribute value'
+rej '<0a/>'                 'element name starting with a digit'
+rej '<a></a >x'             'content after the root, after whitespace'
+
 # --- oracle 2a: the UTF-8 decoder against Python -------------------------
 printf '\n--- oracle 2: Python decides what is UTF-8\n'
 python3 t/diff.py utf8 ./xmlc 2>&1 | tee -a "$OUT"
