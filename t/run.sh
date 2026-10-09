@@ -25,6 +25,65 @@ printf '=== building (CC=%s)\n' "$CC"
 # shellcheck disable=SC2086
 if $CC $CFLAGS -o ./xmlc xmlc.c; then :; else nok "compile xmlc"; fi
 
+# --- character classes and names -------------------------------------------
+# These are hand-written from the production text, so they are self-consistency
+# and not an oracle; the authority on the fifth-edition Name rules is the
+# suite's own EDITION="5" cases, scored below.  They are here because a wrong
+# range in a Unicode table moves a handful of suite cases and nothing else,
+# which is invisible in an aggregate score.
+printf '\n--- productions [2] Char, [4] NameStartChar, [4a] NameChar, [5] Name\n'
+nm()  { if printf '%b' "$1" | ./xmlc -N 2>/dev/null; then ok "Name $2"; else nok "Name $2"; fi; }
+nnm() { if printf '%b' "$1" | ./xmlc -N 2>/dev/null; then nok "not a Name $2"; else ok "not a Name $2"; fi; }
+ch()  { if printf '%b' "$1" | ./xmlc -C >/dev/null 2>&1; then ok "Char $2"; else nok "Char $2"; fi; }
+nch() { if printf '%b' "$1" | ./xmlc -C >/dev/null 2>&1; then nok "not a Char $2"; else ok "not a Char $2"; fi; }
+
+nm  'a'                  'single letter'
+nm  'A'                  'single capital'
+nm  '_'                  'underscore alone'
+nm  ':'                  'colon alone is a Name in XML, not in Namespaces'
+nm  'a:b'                'colon inside'
+nm  'a.b-c_d:e0'         'every ASCII NameChar'
+nm  'a0123456789'        'digits after the first character'
+nm  '\303\200'           'U+00C0, first non-ASCII NameStartChar'
+nm  '\304\262'           'U+0132, which fourth-edition BaseChar omits'
+nm  '\313\277'           'U+02FF, top of the [#xF8-#x2FF] range'
+nm  '\360\220\200\200'     'U+10000, astral NameStartChar (fifth edition)'
+nm  'a\314\200'           'U+0300 is a NameChar but not a NameStartChar'
+nm  'a\302\267'           'U+00B7 middle dot as a NameChar'
+nm  'a\342\200\277'        'U+203F undertie as a NameChar'
+nnm ''                   'empty'
+nnm '.a'                 'leading dot'
+nnm '-a'                 'leading hyphen'
+nnm '0a'                 'leading digit'
+nnm 'a b'                'embedded space'
+nnm '\314\200a'           'U+0300 cannot start a Name'
+nnm '\342\200\277a'        'U+203F cannot start a Name'
+nnm '\303\227'            'U+00D7 multiplication sign is in neither range'
+nnm '\303\267'            'U+00F7 division sign is in neither range'
+nnm '\357\277\276'         'U+FFFE is not even a Char'
+nnm '\355\240\200'         'a surrogate encoded as UTF-8'
+nnm '\300\200'            'overlong NUL'
+
+ch  'a\011b\012c\015d'     'tab, LF and CR are the only legal control chars'
+ch  '\355\237\277'         'U+D7FF, just below the surrogate block'
+ch  '\356\200\200'         'U+E000, just above it'
+ch  '\357\277\275'         'U+FFFD'
+ch  '\364\217\277\277'     'U+10FFFF'
+nch '\000'                'NUL'
+nch '\001'                'U+0001'
+nch '\010'                'backspace'
+nch '\013'                'vertical tab'
+nch '\014'                'form feed'
+nch '\033'                'escape'
+nch '\357\277\276'         'U+FFFE'
+nch '\357\277\277'         'U+FFFF'
+nch '\364\220\200\200'     'U+110000 would be above the Unicode range'
+nch '\376\377'            'a UTF-16 BOM read as bytes'
+
+# --- oracle 2a: the UTF-8 decoder against Python -------------------------
+printf '\n--- oracle 2: Python decides what is UTF-8\n'
+python3 t/diff.py utf8 ./xmlc 2>&1 | tee -a "$OUT"
+
 # --- the W3C conformance suite ---------------------------------------------
 # Vendored whole and unmodified; see t/XMLTS-PROVENANCE for why a subset would
 # not have been licensable.  t/suite.py drives it from the catalogue.

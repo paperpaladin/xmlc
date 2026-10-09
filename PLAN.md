@@ -95,7 +95,7 @@ Ranked by how little we control them.
     first.  A stub that rejects every input scores 1498/1498 on `not-wf`,
     which proves that a `not-wf` score alone measures nothing.  Both numbers
     get pinned from the start so the climb is in the history.
-- [ ] UTF-8 reader, Char/S/NameStartChar/NameChar classes, name scanning
+- [x] UTF-8 reader, Char/NameStartChar/NameChar classes, name scanning
   - why: every later production is written in terms of these, and Fifth
     Edition name rules are the single biggest behavioural difference from the
     suite's default (2nd edition) profile.
