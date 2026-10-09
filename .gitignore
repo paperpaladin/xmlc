@@ -1,0 +1,7 @@
+# build products
+xmlc
+*.o
+# test binaries
+t/unit
+# scratch: the extracted conformance suite, generated documents, run output
+scratch/

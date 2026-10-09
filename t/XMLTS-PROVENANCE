@@ -1,0 +1,74 @@
+W3C XML Conformance Test Suite -- provenance and licence
+========================================================
+
+File:   t/xmlts20130923.tar.gz
+Source: https://www.w3.org/XML/Test/xmlts20130923.tar.gz
+Fetched: 2026-10-09
+sha256: 9b61db9f5dbffa545f4b8d78422167083a8568c59bd1129f94138f936cf6fc1f
+Size:   641522 bytes, 3697 entries, expands to xmlconf/
+
+This is the upstream tarball, byte for byte, unmodified.  Nothing was added,
+removed or repacked.
+
+Why the whole tarball and not a subset
+--------------------------------------
+Every other vendored corpus in these repos is a trimmed subset.  This one is
+not, and the reason is the licence rather than convenience.  The largest
+collection inside it is James Clark's "XML Test Cases version 1998-11-18"
+(xmlconf/xmltest/), whose own readme.html says:
+
+    Copyright (C) 1998 James Clark.  All rights reserved.  Permission is
+    granted to copy and modify this collection in any way for internal use
+    within a company or organization.  Permission is granted to
+    redistribute the file xmltest.zip containing this collection to third
+    parties provided that no modifications of any kind are made to this
+    file.  Note that permission to distribute the collection in any other
+    form is not granted.
+
+Redistribution is permitted only for the unmodified archive.  The W3C tarball
+is the archive the W3C itself redistributes, so vendoring it verbatim is the
+form that stays inside that grant; a hand-picked subset would not.
+
+t/suite.py selects the subset it scores at run time, from xmlconf.xml, and
+never rewrites a test file.
+
+Copyright notices carried by the contents
+-----------------------------------------
+  Copyright (C) 1998 James Clark                       xmlconf/xmltest/
+  Copyright 1998-1999 by Sun Microsystems, Inc.         xmlconf/sun/
+  Modifications copyright 1999, 2001 by OASIS           xmlconf/oasis/, xmlconf.xml
+  (C) Copyright IBM Corp. 2000, 2003  All rights reserved.   xmlconf/ibm/
+  Copyright 1997 Fuji Xerox Information Systems Co.,Ltd.     xmlconf/japanese/
+    "May be freely redistributed provided copyright notice is retained."
+  Copyright Richard Tobin, HCRC 2003, 2006              xmlconf/eduni/
+  Copyright University of Edinburgh, HCRC February 2008 xmlconf/eduni/
+
+The assembled suite is published by the W3C XML Core Working Group under the
+W3C Document Licence and the W3C Software Notice and Licence:
+  https://www.w3.org/Consortium/Legal/2002/copyright-documents-20021231
+  https://www.w3.org/Consortium/Legal/2002/copyright-software-20021231
+
+The suite is test data.  It is not part of xmlc and is not covered by xmlc's
+GPL-3.0-or-later licence.
+
+The catalogue, which is the part that matters
+---------------------------------------------
+xmlconf/xmlconf.xml is a machine-readable catalogue of 2585 test cases.  Each
+<TEST> carries the attributes t/suite.py scores against:
+
+  TYPE            valid | invalid | not-wf | error
+  ENTITIES        none | general | parameter | both
+                  -- whether the case needs an external entity resolved
+  VERSION         1.0 | 1.1 | (absent)
+  EDITION         "5" | "1 2 3 4" | (absent)
+                  -- which editions of XML 1.0 the case applies to
+  RECOMMENDATION  XML1.0 | XML1.1 | XML1.0-errata2e/3e/4e | NS1.0 | NS1.1 | ...
+  NAMESPACE       yes | no
+  URI             the document, relative to the enclosing xml:base
+
+These attributes are the authority's own classification of its own tests.
+xmlc's scope filter is expressed in terms of them and nothing else, so the
+line between "should have caught" and "out of scope" is drawn by the suite
+rather than by us.  The catalogue is itself an XML document with external
+parameter entities, so t/suite.py parses it with Python's expat -- which is
+also the differential oracle.
