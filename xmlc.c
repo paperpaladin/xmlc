@@ -434,7 +434,8 @@ static int parse_etag(P *p)
 
 /* [14] CharData ::= [^<&]* - ([^<&]* ']]>' [^<&]*)
  * Runs up to the next '<' or '&'.  The ']]>' half of the production arrives
- * with CDATA sections, which are the only place that string is allowed. */
+ * with CDATA sections, which are the only place that string is allowed, so
+ * the subtraction is enforced here rather than left to the caller. */
 static int parse_chardata(P *p)
 {
 	for (;;) {
@@ -447,6 +448,10 @@ static int parse_chardata(P *p)
 			return fail(p, XML_ERR_UTF8, NULL);
 		if (!is_char(c))
 			return fail(p, XML_ERR_CHAR, NULL);
+		if (c == ']' && lit(p, "]]>"))
+			return fail(p, XML_ERR_SYNTAX, "']]>' must be escaped "
+			    "in character data; only a CDATA section may end "
+			    "with it");
 		p->i += (size_t)w;
 	}
 }

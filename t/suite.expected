@@ -2,9 +2,9 @@ CASES 2585 catalogued, 9 of them not present in the archive
 CRASHES 0
 SCORE not-wf    897/897  rejected
 SCORE valid       0/598  accepted
-SCORE invalid     0/171  accepted
-SCORE error    8 cases: 8 rejected, 0 accepted (either conforms)
-SHOULD-HAVE-CAUGHT 769
+SCORE invalid    20/171  accepted
+SCORE error    8 cases: 7 rejected, 1 accepted (either conforms)
+SHOULD-HAVE-CAUGHT 749
 FAIL invalid attr01 invalid/attr01.xml
 FAIL invalid attr02 invalid/attr02.xml
 FAIL invalid attr03 invalid/attr03.xml
@@ -493,12 +493,8 @@ FAIL invalid inv-required02 invalid/required02.xml
 FAIL invalid invalid-sa-140 140.xml
 FAIL invalid invalid-sa-141 141.xml
 FAIL invalid o-e2 e2.xml
-FAIL invalid o-p01pass1 p01pass1.xml
 FAIL valid o-p01pass2 p01pass2.xml
 FAIL invalid o-p01pass3 p01pass3.xml
-FAIL invalid o-p03pass1 p03pass1.xml
-FAIL invalid o-p04pass1 p04pass1.xml
-FAIL invalid o-p05pass1 p05pass1.xml
 FAIL invalid o-p06fail1 p06fail1.xml
 FAIL valid o-p06pass1 p06pass1.xml
 FAIL valid o-p07pass1 p07pass1.xml
@@ -513,7 +509,6 @@ FAIL invalid o-p16pass1 p16pass1.xml
 FAIL invalid o-p16pass2 p16pass2.xml
 FAIL invalid o-p16pass3 p16pass3.xml
 FAIL invalid o-p18pass1 p18pass1.xml
-FAIL invalid o-p22pass1 p22pass1.xml
 FAIL invalid o-p22pass2 p22pass2.xml
 FAIL invalid o-p22pass3 p22pass3.xml
 FAIL valid o-p22pass4 p22pass4.xml
@@ -538,22 +533,7 @@ FAIL valid o-p28pass1 p28pass1.xml
 FAIL valid o-p29pass1 p29pass1.xml
 FAIL invalid o-p32pass1 p32pass1.xml
 FAIL invalid o-p32pass2 p32pass2.xml
-FAIL invalid o-p39pass1 p39pass1.xml
-FAIL invalid o-p39pass2 p39pass2.xml
-FAIL invalid o-p40pass1 p40pass1.xml
-FAIL invalid o-p40pass2 p40pass2.xml
-FAIL invalid o-p40pass3 p40pass3.xml
-FAIL invalid o-p40pass4 p40pass4.xml
-FAIL invalid o-p41pass1 p41pass1.xml
-FAIL invalid o-p41pass2 p41pass2.xml
-FAIL invalid o-p42pass1 p42pass1.xml
-FAIL invalid o-p42pass2 p42pass2.xml
 FAIL valid o-p43pass1 p43pass1.xml
-FAIL invalid o-p44pass1 p44pass1.xml
-FAIL invalid o-p44pass2 p44pass2.xml
-FAIL invalid o-p44pass3 p44pass3.xml
-FAIL invalid o-p44pass4 p44pass4.xml
-FAIL invalid o-p44pass5 p44pass5.xml
 FAIL valid o-p45pass1 p45pass1.xml
 FAIL valid o-p46pass1 p46pass1.xml
 FAIL valid o-p47pass1 p47pass1.xml
