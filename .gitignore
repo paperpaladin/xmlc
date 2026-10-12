@@ -5,3 +5,5 @@ xmlc
 t/unit
 # scratch: the extracted conformance suite, generated documents, run output
 scratch/
+__pycache__/
+*.pyc

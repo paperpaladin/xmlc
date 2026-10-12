@@ -602,9 +602,9 @@ static unsigned char *slurp(const char *path, size_t *len)
 
 static void usage(void)
 {
-	fputs("usage: xmlc [-N] [FILE]\n"
+	fputs("usage: xmlc [-N|-C] [FILE]\n"
 	      "  (no flag)  check well-formedness: exit 0 well-formed, 1 not,\n"
-	      "             2 unreadable\n"
+	      "             2 unreadable, 3 uses an unimplemented production\n"
 	      "  -N         the whole input must be one Name [5]\n"
 	      "  -C         every code point must be a legal Char [2];\n"
 	      "             prints how many were seen\n", stderr);
@@ -685,5 +685,23 @@ int main(int argc, char **argv)
 	free(buf);
 	free(p.stack.v);
 	free(p.att.v);
-	return ok ? 0 : 1;
+	if (ok)
+		return 0;
+	/* 3, not 1, when the production is simply not written yet.
+	 *
+	 * "I decline to judge" and "this document is not well-formed" were the
+	 * same exit status, so the scorer counted every decline as a correct
+	 * rejection. The headline `SCORE not-wf 897/897 rejected` was 799
+	 * declines and 98 real rejections -- 89% of it xmlc saying it does not
+	 * do comments, processing instructions, CDATA or the doctype yet.
+	 *
+	 * PLAN.md's first commit entry warns about exactly this: "a stub that
+	 * rejects every input scores 1498/1498 on not-wf, which proves that a
+	 * not-wf score alone measures nothing." The score was 89% of the way
+	 * to being that stub, and nothing in the output said so.
+	 *
+	 * The contract gains a status rather than the scorer gaining a grep of
+	 * stderr: an exit status is the interface, and a caller other than the
+	 * scorer deserves the same distinction. */
+	return p.err == XML_ERR_UNIMPL ? 3 : 1;
 }

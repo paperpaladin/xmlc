@@ -7,8 +7,13 @@ well-formedness and, on request, prints it back in James Clark's canonical XML
 form so two parses can be diffed byte for byte.
 
 - `xmlc FILE` says well-formed or not with its exit status and nothing else:
-  0 well-formed, 1 not well-formed, 2 cannot read the file.  One diagnostic
-  line on stderr naming the line, column and byte offset.
+  0 well-formed, 1 not well-formed, 2 cannot read the file, 3 the document
+  uses a production that is not implemented yet.  One diagnostic line on
+  stderr naming the line, column and byte offset.
+  Status 3 exists because it has to: while the parser is incomplete, "I
+  reject this" and "I have not been taught this" are different answers, and
+  collapsing them into exit 1 makes a stub score 100% on `not-wf`.  It is a
+  scaffolding status and goes away when the last production lands.
 - `xmlc -c FILE` writes canonical XML (the `canonxml.html` grammar shipped
   with the conformance suite): UTF-8, no prolog, no DTD, no comments,
   `<e></e>` for empty elements, attributes in Unicode code point order,
@@ -27,6 +32,22 @@ form so two parses can be diffed byte for byte.
   relaxations), XML 1.1, XML Schema, Relax NG, XInclude, XPath, UTF-16, any
   encoding beyond UTF-8 and US-ASCII, XML Canonicalisation (C14N -- a
   different thing from the canonical form above), or a mutable document tree.
+
+## Status, as of the last commit
+
+Two of the 42 items below are done: the catalogue-driven scorer and the UTF-8
+reader with the Char/Name classes.  Elements parse well enough to produce a
+verdict, but comments, processing instructions, CDATA, the prolog, references,
+the DTD subset and namespaces do not, so **93% of the in-scope suite is
+declined with exit 3 rather than judged** (1553 of 1674).  Of the 121 cases
+xmlc does judge, 119 agree with the suite.
+
+The sections below describe the finished tool.  They are written in the
+present tense because they are a specification, not a report: of the four
+oracles, only the first is wired up.  The expat differential, the sanitizer
+truncation sweep and the canonical round-trip are items 36, 39 and 28, all
+still open, and `t/run.sh` does not run them.  Nothing in this repo has
+measured memory safety yet.
 
 ## Hard invariant
 

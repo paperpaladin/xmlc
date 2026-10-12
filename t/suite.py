@@ -178,7 +178,7 @@ def mode_score(root, bin_):
     # A status outside {0,1,2} is a crash or a hang and is a failure no matter
     # what the case asked for.  A harness written as `! xmlc "$f"` scores a
     # segfault on a not-wf case as a pass; this one does not.
-    crash = [t["ID"] for t, o, s in rows if s not in (0, 1, 2)]
+    crash = [t["ID"] for t, o, s in rows if s not in (0, 1, 2, 3)]
     print("CRASHES %d" % len(crash))
     for i in sorted(crash):
         print("CRASH %s" % i)
@@ -193,13 +193,39 @@ def mode_score(root, bin_):
         want = WANT[ty]
         if want is None:
             rej = sum(1 for t, s in grp if s == 1)
-            print("SCORE error    %d cases: %d rejected, %d accepted "
-                  "(either conforms)" % (len(grp), rej, len(grp) - rej))
+            dec = sum(1 for t, s in grp if s == 3)
+            print("SCORE error    %d cases: %d rejected, %d accepted, "
+                  "%d declined (either verdict conforms)"
+                  % (len(grp), rej, len(grp) - rej - dec, dec))
             continue
-        good = [t for t, s in grp if s == want]
+        # A DECLINE (exit 3) is not a verdict, and counting it as one is
+        # how this score became meaningless. `not-wf 897/897 rejected` was
+        # 799 declines and 98 real rejections: 89% of the headline number
+        # was xmlc saying it does not implement comments, processing
+        # instructions, CDATA or the doctype yet.
+        #
+        # PLAN.md's first commit entry names this failure mode -- "a stub
+        # that rejects every input scores 1498/1498 on not-wf, which proves
+        # that a not-wf score alone measures nothing" -- and the score was
+        # 89% of the way to being that stub with nothing in the output
+        # saying so. xmlc now exits 3 for a decline so the two can be told
+        # apart.
+        declined = [t for t, s in grp if s == 3]
+        judged = [(t, s) for t, s in grp if s != 3]
+        good = [t for t, s in judged if s == want]
         verb = "rejected" if want else "accepted"
-        print("SCORE %-8s %4d/%-4d %s" % (ty, len(good), len(grp), verb))
-        bad += [t for t, s in grp if s != want]
+        print("SCORE %-8s %4d/%-4d %s, of %d judged (%d declined as "
+              "unimplemented)"
+              % (ty, len(good), len(judged), verb, len(judged), len(declined)))
+        bad += [t for t, s in judged if s != want]
+    # The proportion in one line, because that is the number a reader needs
+    # and the per-type lines above make them do arithmetic for it.
+    ndec = sum(1 for t, s in inscope if s == 3)
+    njud = len(inscope) - ndec
+    print("DECLINED %d of %d in-scope cases (%.0f%%) are unimplemented "
+          "productions, not verdicts" % (ndec, len(inscope),
+                                         100.0 * ndec / max(1, len(inscope))))
+    print("JUDGED %d" % njud)
     print("SHOULD-HAVE-CAUGHT %d" % len(bad))
     for t in sorted(bad, key=lambda t: t["ID"]):
         print("FAIL %s %s %s" % (t["TYPE"], t["ID"], t["URI"]))

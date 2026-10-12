@@ -137,6 +137,20 @@ python3 t/diff.py utf8 ./xmlc 2>&1 | tee -a "$OUT"
 # Vendored whole and unmodified; see t/XMLTS-PROVENANCE for why a subset would
 # not have been licensable.  t/suite.py drives it from the catalogue.
 printf '\n--- oracle 1: W3C XML Conformance Test Suite\n'
+# The corpus is the oracle, so verify it is the corpus we recorded before
+# scoring against it. t/XMLTS-PROVENANCE pins the sha256 of the upstream
+# tarball; a score against a tampered or truncated archive is worth nothing,
+# and until now the recorded digest was never read by anything.
+want=$(sed -n 's/^sha256: *//p' t/XMLTS-PROVENANCE)
+got=$(sha256sum t/xmlts20130923.tar.gz | cut -d" " -f1)
+if [ -z "$want" ]; then
+	nok "t/XMLTS-PROVENANCE records no sha256"
+elif [ "$want" = "$got" ]; then
+	ok "conformance tarball matches the sha256 in t/XMLTS-PROVENANCE"
+else
+	nok "conformance tarball digest $got != recorded $want"
+fi
+
 if [ ! -d "$SUITE" ]; then
 	tar xzf t/xmlts20130923.tar.gz -C "$SCRATCH" || nok "extract suite"
 fi
@@ -145,7 +159,11 @@ if [ -d "$SUITE" ]; then
 	cat "$SCRATCH/score.txt" | tee -a "$OUT"
 	# Pin the numbers.  A regression now fails the suite instead of
 	# quietly scoring lower, which is the only way a score is a test.
-	grep -E '^(CASES|CRASHES|SCORE|SHOULD-HAVE-CAUGHT|OOS|OUT-OF-SCOPE|FAIL) ' \
+	# DECLINED and JUDGED are pinned too. They are the two numbers that say
+	# how much of the corpus xmlc actually has an opinion about, and without
+	# them the SCORE lines read as a conformance result when 93% of the
+	# in-scope cases are declined as unimplemented.
+	grep -E '^(CASES|CRASHES|SCORE|DECLINED|JUDGED|SHOULD-HAVE-CAUGHT|OOS|OUT-OF-SCOPE|FAIL) ' \
 		"$SCRATCH/score.txt" > "$SCRATCH/score.pinned"
 	if [ ! -f t/suite.expected ]; then
 		nok "t/suite.expected missing (cp scratch/score.pinned t/suite.expected)"
