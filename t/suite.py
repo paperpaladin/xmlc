@@ -25,8 +25,16 @@ also oracle number two.
 
 Modes:
     score  ROOT BIN     accept/reject over the catalogue, per TYPE
+
+Planned, and refused rather than listed as working:
     canon  ROOT BIN     canonical form against the suite's own out/*.xml
+                        -- needs the canonical dump, PLAN item 28
     diff   ROOT BIN     differential against expat: verdict, then events
+                        -- PLAN item 36
+
+This docstring is what main() prints when it is called with too few
+arguments, so it is a usage message and not a plan. It listed all three
+modes as if they worked.
 """
 
 import collections
@@ -256,6 +264,11 @@ def main():
     mode, root, bin_ = sys.argv[1], sys.argv[2], sys.argv[3]
     if mode == "score":
         return mode_score(root, bin_)
+    if mode in ("canon", "diff"):
+        item = "28, the canonical dump" if mode == "canon" else "36, the expat differential"
+        print("%s mode is not implemented yet (PLAN item %s)" % (mode, item),
+              file=sys.stderr)
+        return 3
     print("unknown mode %s" % mode, file=sys.stderr)
     return 2
 
