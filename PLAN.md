@@ -120,13 +120,13 @@ Ranked by how little we control them.
   - why: every later production is written in terms of these, and Fifth
     Edition name rules are the single biggest behavioural difference from the
     suite's default (2nd edition) profile.
-- [ ] elements, start and end tags, attributes, proper nesting
+- [x] elements, start and end tags, attributes, proper nesting
   - why: the smallest thing that accepts a document, so `valid` leaves zero.
-- [ ] character data and the forbidden `]]>`
+- [x] character data and the forbidden `]]>`
   - why: `]]>` outside CDATA is the one content error with no local cause.
-- [ ] comments and processing instructions
+- [x] comments and processing instructions
   - why: `--` inside a comment and `<?xml` as a PI target are both errors.
-- [ ] CDATA sections
+- [x] CDATA sections
   - why: the only place `]]>` terminates rather than offends.
 - [ ] the XML declaration and the prolog
   - why: version, encoding and standalone each have their own grammar, and

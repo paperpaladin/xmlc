@@ -87,12 +87,59 @@ nch '\376\377'            'a UTF-16 BOM read as bytes'
 printf '\n--- documents: elements, tags, attributes, nesting\n'
 acc() { if printf '%b' "$1" | ./xmlc 2>/dev/null; then ok "accept $2"; else nok "accept $2"; fi; }
 rej() { if printf '%b' "$1" | ./xmlc 2>/dev/null; then nok "reject $2"; else ok "reject $2"; fi; }
+# `rej` tests truthiness, so exit 3 satisfies it as readily as exit 1: it
+# reads "did not accept", not "rejected". That is the same conflation the
+# suite scorer was built to undo, still living here in the unit helpers --
+# any production this parser has not learned would pass every rej() below.
+# `st` pins the exact status, and the cases added since use it.
+st() {
+	printf '%b' "$2" | ./xmlc >/dev/null 2>&1
+	got=$?
+	if [ "$got" = "$1" ]; then ok "$3 (exit $1)"
+	else nok "$3: exit $got, wanted $1"; fi
+}
 
 acc '<a/>'                  'empty element tag'
 acc '<a></a>'               'start and end tag'
 acc '<a><b/><b/></a>'       'siblings'
 acc '<a><b><c/></b></a>'    'nesting'
 acc '<a>text</a>'           'character data'
+
+printf '\n--- comments, processing instructions, CDATA sections\n'
+# 0 well-formed, 1 not well-formed, 3 not implemented, pinned exactly: the
+# difference between 1 and 3 is the whole point of this parser.
+st 0 '<a><!-- c --></a>'           'comment inside an element'
+st 0 '<a><!----></a>'              'empty comment'
+st 0 '<!-- c --><a/>'              'comment before the root'
+st 0 '<a/><!-- c -->'              'comment after the root'
+st 1 '<a><!-- a -- b --></a>'      "'--' inside a comment [15]"
+st 1 '<a><!---></a>'               "a comment may not end '--->' [15]"
+st 1 '<a><!-- unterminated</a>'    'unterminated comment'
+
+st 0 '<a><?pi data?></a>'          'processing instruction'
+st 0 '<a><?pi?></a>'               'PI with no data'
+st 0 '<?pi x?><a/>'                'PI before the root'
+st 0 '<a><?xmlfoo d?></a>'         "'xmlfoo' is a legal PI target [17]"
+st 1 '<a><?xml d?></a>'            "'xml' is reserved as a PI target [17]"
+st 1 '<a><?XmL d?></a>'            'the reservation is case-insensitive [17]'
+st 1 '<a><?pi unterminated</a>'    'unterminated PI'
+
+st 0 '<a><![CDATA[x]]></a>'        'CDATA section'
+st 0 '<a><![CDATA[]]></a>'         'empty CDATA section'
+st 0 '<a><![CDATA[<b>&amp;]]></a>' 'markup inside CDATA is character data'
+st 1 '<a><![CDATA[x</a>'           'unterminated CDATA section'
+st 1 '<![CDATA[x]]><a/>'           'CDATA outside any element [43]'
+st 1 '<a>]]></a>'                  "']]>' outside CDATA is still refused [14]"
+
+# The XML declaration is production [23], not a PI, though it opens '<?'.
+# Routing it through the PI parser made it fail the reserved-target rule, so
+# every document carrying one -- most of the suite -- was REJECTED rather
+# than declined: 183 confident wrong answers about valid documents.
+st 3 '<?xml version="1.0"?><a/>'   'the XML declaration is not implemented [23]'
+st 1 ' <?xml version="1.0"?><a/>'  'not at byte 0 it is a PI, so target reserved'
+st 1 'x<a/>'                       'character data before the root'
+st 1 '<a/><b/>'                    'a second root element'
+st 1 '<!-- c -->'                  'a comment alone is not a document [1]'
 acc '<a b="1" c="2"/>'      'two attributes'
 acc "<a b='1'/>"            'single-quoted attribute value'
 acc '<a b="1\047"/>'        "an apostrophe inside a double-quoted value"

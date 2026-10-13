@@ -456,6 +456,113 @@ static int parse_chardata(P *p)
 	}
 }
 
+/* [15] Comment ::= '<!--' ((Char - '-') | ('-' (Char - '-')))* '-->'
+ *
+ * That production is written the long way round to say one thing: '--' may
+ * not occur inside a comment, and so a comment may not end '--->'. Scanning
+ * for '-->' and stopping there would accept both, which is the usual way this
+ * gets implemented wrongly. Entered with p->i on the '<'. */
+static int parse_comment(P *p)
+{
+	p->i += 4;			/* '<!--' */
+	for (;;) {
+		int w;
+		long c;
+
+		if (lit(p, "-->")) {
+			p->i += 3;
+			return 1;
+		}
+		c = cur(p, &w);
+		if (c == -2)
+			return fail(p, XML_ERR_SYNTAX,
+				    "unterminated comment [15]");
+		if (c == -1)
+			return fail(p, XML_ERR_UTF8, NULL);
+		if (!is_char(c))
+			return fail(p, XML_ERR_CHAR, NULL);
+		/* A '-' that did not start '-->' may not be followed by
+		 * another '-'. Rejects "<!-- a -- b -->" and "<!--->". */
+		if (c == '-' && byte_at(p, 1) == '-')
+			return fail(p, XML_ERR_SYNTAX, "'--' may not appear "
+				    "inside a comment, so a comment may not "
+				    "end '--->' either [15]");
+		p->i += (size_t)w;
+	}
+}
+
+/* [16] PI       ::= '<?' PITarget (S (Char* - (Char* '?>' Char*)))? '?>'
+ * [17] PITarget ::= Name - (('X'|'x')('M'|'m')('L'|'l'))
+ *
+ * The subtraction in [17] has no syntactic cause: 'xml' is a perfectly legal
+ * Name, and is excluded because the specification reserves it. */
+static int parse_pi(P *p)
+{
+	slice target;
+
+	p->i += 2;			/* '<?' */
+	if (!scan_name(p, &target))
+		return 0;
+	if (target.n == 3 && (target.b[0] | 32) == 'x' &&
+	    (target.b[1] | 32) == 'm' && (target.b[2] | 32) == 'l')
+		return fail(p, XML_ERR_WFC, "'xml' in any combination of "
+			    "cases is a reserved PI target [17]");
+	if (!lit(p, "?>")) {
+		if (!is_s(byte_at(p, 0)))
+			return fail(p, XML_ERR_SYNTAX, "a PI target must be "
+				    "followed by whitespace or '?>' [16]");
+		skip_s(p);
+	}
+	for (;;) {
+		int w;
+		long c;
+
+		if (lit(p, "?>")) {
+			p->i += 2;
+			return 1;
+		}
+		c = cur(p, &w);
+		if (c == -2)
+			return fail(p, XML_ERR_SYNTAX,
+				    "unterminated processing instruction [16]");
+		if (c == -1)
+			return fail(p, XML_ERR_UTF8, NULL);
+		if (!is_char(c))
+			return fail(p, XML_ERR_CHAR, NULL);
+		p->i += (size_t)w;
+	}
+}
+
+/* [18] CDSect  ::= CDStart CData CDEnd
+ * [19] CDStart ::= '<![CDATA['
+ * [20] CData   ::= (Char* - (Char* ']]>' Char*))
+ * [21] CDEnd   ::= ']]>'
+ *
+ * The only place ']]>' may appear: parse_chardata rejects it everywhere else,
+ * which is the other half of production [14]. */
+static int parse_cdata(P *p)
+{
+	p->i += 9;			/* '<![CDATA[' */
+	for (;;) {
+		int w;
+		long c;
+
+		if (lit(p, "]]>")) {
+			p->i += 3;
+			return 1;
+		}
+		c = cur(p, &w);
+		if (c == -2)
+			return fail(p, XML_ERR_SYNTAX,
+				    "unterminated CDATA section [18]");
+		if (c == -1)
+			return fail(p, XML_ERR_UTF8, NULL);
+		if (!is_char(c))
+			return fail(p, XML_ERR_CHAR, NULL);
+		p->i += (size_t)w;
+	}
+}
+
 /* [1]  document ::= prolog element Misc*
  *
  * Iterative.  The element stack is on the heap, so nesting depth never
@@ -464,43 +571,121 @@ static int parse_chardata(P *p)
 static int parse_document(P *p)
 {
 	int empty;
+	int seen_root = 0;
 
-	skip_s(p);		/* prolog: XMLDecl, doctype and Misc come later */
+	/* Comments and PIs are Misc, so they are legal before the root as well
+	 * as inside and after it. That is why the loop tracks whether the root
+	 * has been seen instead of leaving as soon as the element stack is
+	 * empty: with a comment in the prolog the stack is empty and the
+	 * document has not started. */
+	/* [23] XMLDecl ::= '<?xml' VersionInfo EncodingDecl? SDDecl? S? '?>'
+	 *
+	 * This is NOT a processing instruction, even though it opens with
+	 * '<?'. It is its own production, it may appear only at byte 0 with
+	 * no whitespace before it, and 'xml' is reserved as a PI target
+	 * precisely so that the two can never be confused.
+	 *
+	 * Getting that wrong is expensive in a way worth recording: routing
+	 * it through parse_pi made every document with a declaration -- which
+	 * is most of them -- fail production [17] and be REJECTED as
+	 * not-well-formed. The suite went from 2 should-have-caught cases to
+	 * 183, all of them confident wrong answers about valid documents.
+	 * Unimplemented and not-well-formed are different answers, which is
+	 * the entire reason exit 3 exists here.
+	 *
+	 * The whitespace test is the grammar: VersionInfo begins with S, so
+	 * '<?xmlfoo?>' is a PI whose target is the legal Name 'xmlfoo', and
+	 * only the exact three-letter name is reserved. */
+	if (lit(p, "<?xml") && is_s(byte_at(p, 5)))
+		return fail(p, XML_ERR_UNIMPL, "the XML declaration [23]");
+
+	skip_s(p);
 	if (byte_at(p, 0) != '<')
 		return fail(p, XML_ERR_SYNTAX, "a document must have a root "
 			    "element [1]");
 	for (;;) {
 		if (byte_at(p, 0) == '<') {
-			if (byte_at(p, 1) == '/') {
+			if (lit(p, "<!--")) {
+				if (!parse_comment(p))
+					return 0;
+			} else if (lit(p, "<![CDATA[")) {
+				/* [43] content: a CDATA section is content,
+				 * and content only exists inside an element. */
+				if (p->stack.n == 0)
+					return fail(p, XML_ERR_SYNTAX,
+						    "a CDATA section may only "
+						    "appear inside an element "
+						    "[43]");
+				if (!parse_cdata(p))
+					return 0;
+			} else if (byte_at(p, 1) == '?') {
+				if (!parse_pi(p))
+					return 0;
+			} else if (byte_at(p, 1) == '!') {
+				return fail(p, XML_ERR_UNIMPL, "the doctype "
+					    "declaration and the internal "
+					    "subset");
+			} else if (byte_at(p, 1) == '/') {
 				p->i += 2;
 				if (!parse_etag(p))
 					return 0;
-			} else if (byte_at(p, 1) == '!' || byte_at(p, 1) == '?') {
-				return fail(p, XML_ERR_UNIMPL, "comments, "
-					    "processing instructions, CDATA "
-					    "and the doctype");
+				if (p->stack.n == 0)
+					break;	/* the root just closed */
 			} else {
+				int root = p->stack.n == 0;
+
+				if (root && seen_root)
+					return fail(p, XML_ERR_SYNTAX,
+						    "a second root element "
+						    "[1]");
 				p->i += 1;
 				if (!parse_stag(p, &empty))
 					return 0;
+				if (root) {
+					seen_root = 1;
+					if (p->stack.n == 0)
+						break;	/* empty root <a/> */
+				}
 			}
-			if (p->stack.n == 0)
-				break;	/* the root element just closed */
 		} else if (byte_at(p, 0) == '&') {
 			return fail(p, XML_ERR_UNIMPL, "references");
 		} else if (byte_at(p, 0) < 0) {
-			return fail(p, XML_ERR_SYNTAX, "input ends inside an "
-				    "element");
+			return fail(p, XML_ERR_SYNTAX, seen_root
+				    ? "input ends inside an element"
+				    : "a document must have a root element "
+				      "[1]");
+		} else if (p->stack.n == 0) {
+			/* Outside the root, Misc allows only whitespace here;
+			 * character data is content and content needs an
+			 * element around it. */
+			if (!is_s(byte_at(p, 0)))
+				return fail(p, XML_ERR_SYNTAX, seen_root
+					    ? "content after the root element "
+					      "[1]"
+					    : "content before the root element "
+					      "[1]");
+			skip_s(p);
 		} else {
 			if (!parse_chardata(p))
 				return 0;
 		}
 	}
-	/* Misc* : nothing but whitespace is allowed after the root for now. */
-	skip_s(p);
-	if (p->i != p->n)
-		return fail(p, XML_ERR_SYNTAX, "content after the root "
-			    "element [1]");
+	/* [27] Misc ::= Comment | PI | S  -- after the root as well. */
+	for (;;) {
+		skip_s(p);
+		if (p->i >= p->n)
+			break;
+		if (lit(p, "<!--")) {
+			if (!parse_comment(p))
+				return 0;
+		} else if (byte_at(p, 0) == '<' && byte_at(p, 1) == '?') {
+			if (!parse_pi(p))
+				return 0;
+		} else {
+			return fail(p, XML_ERR_SYNTAX, "content after the root "
+				    "element [1]");
+		}
+	}
 	return 1;
 }
 

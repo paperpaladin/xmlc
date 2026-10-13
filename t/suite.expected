@@ -1,13 +1,12 @@
 CASES 2585 catalogued, 9 of them not present in the archive
 CRASHES 0
-SCORE not-wf     98/98   rejected, of 98 judged (799 declined as unimplemented)
+SCORE not-wf    136/136  rejected, of 136 judged (761 declined as unimplemented)
 SCORE valid       0/1    accepted, of 1 judged (597 declined as unimplemented)
-SCORE invalid    20/21   accepted, of 21 judged (150 declined as unimplemented)
+SCORE invalid    36/36   accepted, of 36 judged (135 declined as unimplemented)
 SCORE error    8 cases: 0 rejected, 1 accepted, 7 declined (either verdict conforms)
-DECLINED 1553 of 1674 in-scope cases (93%) are unimplemented productions, not verdicts
-JUDGED 121
-SHOULD-HAVE-CAUGHT 2
-FAIL invalid o-p01pass3 p01pass3.xml
+DECLINED 1500 of 1674 in-scope cases (90%) are unimplemented productions, not verdicts
+JUDGED 174
+SHOULD-HAVE-CAUGHT 1
 FAIL valid rmt-e2e-22 E22.xml
 OOS edition1-4   310 cases,    0 match the catalogue anyway  (EDITION excludes 5: superseded name or char rules)
 OOS encoding      53 cases,   35 match the catalogue anyway  (UTF-16, or a declared encoding xmlc refuses by design)
