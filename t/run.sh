@@ -166,6 +166,26 @@ st 1 '<?xml version="1.0"encoding="UTF-8"?><a/>'  'S is required before encoding
 # Declared but unreadable is not the same as malformed.
 st 3 '<?xml version="1.10"?><a/>'                 'XML 1.10 is a legal version this parser will not judge [26]'
 st 3 '<?xml version="1.0" encoding="EUC-JP"?><a/>' 'a declared encoding xmlc cannot decode [80]'
+
+printf '\n--- references [66] [67] [68]\n'
+st 0 '<a>&amp;</a>'                    'the predefined &amp;'
+st 0 '<a>&amp;&lt;&gt;&apos;&quot;</a>' 'all five predefined entities'
+st 0 '<a>&#65;</a>'                    'decimal character reference [66]'
+st 0 '<a>&#x41;</a>'                   'hexadecimal character reference [66]'
+st 0 '<a b="&amp;"/>'                  'an entity reference in an attribute value'
+st 0 '<a b="&#65;"/>'                  'a character reference in an attribute value'
+st 1 '<a>&foo;</a>'                    'undeclared entity (WFC: Entity Declared) [68]'
+st 1 '<a b="&foo;"/>'                  'undeclared entity in an attribute value'
+st 1 '<a>&amp</a>'                     "a reference needs its ';' [68]"
+st 1 '<a>&#;</a>'                      'a character reference needs a digit [66]'
+st 1 '<a>&</a>'                        'a bare & is not a reference'
+st 1 '&amp;<a/>'                       'a reference is content, so it needs an element [43]'
+# WFC: Legal Character. Each of these parses perfectly and names a code point
+# that may not appear in an XML document, which is the whole constraint.
+st 1 '<a>&#0;</a>'                     'character reference to NUL [66]'
+st 1 '<a>&#xD800;</a>'                 'character reference to a surrogate [66]'
+st 1 '<a>&#x110000;</a>'               'character reference past the Unicode range [66]'
+st 1 '<a>&#99999999999999;</a>'        'a character reference too large to hold [66]'
 acc '<a b="1" c="2"/>'      'two attributes'
 acc "<a b='1'/>"            'single-quoted attribute value'
 acc '<a b="1\047"/>'        "an apostrophe inside a double-quoted value"

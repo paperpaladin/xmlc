@@ -317,6 +317,11 @@ static int eat_eq(P *p)
  * never well-formed.  That is WFC: No < in Attribute Values, and it is the
  * one rule here with no local syntactic cause -- nothing about '<' is
  * ambiguous, it is simply forbidden. */
+/* Defined below with the other reference machinery: attribute values and
+ * content both contain references, and the two callers sit on either side of
+ * it. */
+static int parse_reference(P *p);
+
 static int scan_attvalue(P *p, slice *out)
 {
 	int q = byte_at(p, 0);
@@ -343,9 +348,16 @@ static int scan_attvalue(P *p, slice *out)
 		if (c == '<')
 			return fail(p, XML_ERR_WFC, "'<' in an attribute value "
 				    "(WFC: No < in Attribute Values)");
-		if (c == '&')
-			return fail(p, XML_ERR_UNIMPL, "references in attribute "
-				    "values");
+		if (c == '&') {
+			/* The value slice stays the raw bytes: this parser
+			 * checks well-formedness and does not hand anyone a
+			 * decoded value, so expanding here would produce a
+			 * string nothing reads. Duplicate-attribute detection
+			 * compares names, not values. */
+			if (!parse_reference(p))
+				return 0;
+			continue;
+		}
 		p->i += (size_t)w;
 	}
 	out->b = p->b + start;
@@ -454,6 +466,97 @@ static int parse_chardata(P *p)
 			    "with it");
 		p->i += (size_t)w;
 	}
+}
+
+/* [66] CharRef   ::= '&#' [0-9]+ ';' | '&#x' [0-9a-fA-F]+ ';'
+ * [68] EntityRef ::= '&' Name ';'
+ * [67] Reference ::= EntityRef | CharRef
+ *
+ * Two well-formedness constraints live here, and neither is syntactic:
+ *
+ *   Legal Character   a character reference must denote a Char [2]. '&#0;'
+ *                     parses perfectly and refers to a code point that may
+ *                     not appear in an XML document at all.
+ *   Entity Declared   a reference to an entity nobody declared is an error.
+ *                     With no DTD the five predefined entities are the only
+ *                     declared ones, and this parser only ever reaches here
+ *                     with no DTD, because a doctype declines the whole
+ *                     document before any content is read. That is why the
+ *                     refusal below can be unconditional; if the internal
+ *                     subset is ever implemented, this is the first thing
+ *                     that has to learn about it.
+ *
+ * Entered with p->i on the '&'. */
+static int is_predef(slice n)
+{
+	static const char *const e[] = { "amp", "lt", "gt", "apos", "quot" };
+	size_t k;
+
+	for (k = 0; k < sizeof e / sizeof *e; k++)
+		if (n.n == strlen(e[k]) && memcmp(n.b, e[k], n.n) == 0)
+			return 1;
+	return 0;
+}
+
+static int parse_reference(P *p)
+{
+	slice name;
+
+	p->i += 1;			/* '&' */
+
+	if (byte_at(p, 0) == '#') {
+		long v = 0;
+		int hex = 0, digits = 0, overflow = 0;
+
+		p->i += 1;
+		if (byte_at(p, 0) == 'x') {
+			hex = 1;
+			p->i += 1;
+		}
+		for (;;) {
+			int c = byte_at(p, 0), d;
+
+			if (c >= '0' && c <= '9')
+				d = c - '0';
+			else if (hex && c >= 'a' && c <= 'f')
+				d = c - 'a' + 10;
+			else if (hex && c >= 'A' && c <= 'F')
+				d = c - 'A' + 10;
+			else
+				break;
+			/* Clamped rather than wrapped: a reference to some
+			 * enormous number is not a Char either way, and
+			 * signed overflow would be undefined. */
+			if (v <= 0x10FFFF)
+				v = v * (hex ? 16 : 10) + d;
+			else
+				overflow = 1;
+			digits++;
+			p->i += 1;
+		}
+		if (digits == 0)
+			return fail(p, XML_ERR_SYNTAX, "a character reference "
+				    "needs at least one digit [66]");
+		if (!eat(p, ";"))
+			return fail(p, XML_ERR_SYNTAX, "expected ';' at the "
+				    "end of a character reference [66]");
+		if (overflow || !is_char(v))
+			return fail(p, XML_ERR_WFC, "character reference to a "
+				    "code point that is not a Char (WFC: Legal "
+				    "Character) [66]");
+		return 1;
+	}
+
+	if (!scan_name(p, &name))
+		return 0;
+	if (!eat(p, ";"))
+		return fail(p, XML_ERR_SYNTAX, "expected ';' at the end of an "
+			    "entity reference [68]");
+	if (is_predef(name))
+		return 1;
+	return fail(p, XML_ERR_WFC, "reference to an entity that was never "
+		    "declared; with no doctype only amp, lt, gt, apos and quot "
+		    "are declared (WFC: Entity Declared) [68]");
 }
 
 /* [15] Comment ::= '<!--' ((Char - '-') | ('-' (Char - '-')))* '-->'
@@ -770,7 +873,12 @@ static int parse_document(P *p)
 				}
 			}
 		} else if (byte_at(p, 0) == '&') {
-			return fail(p, XML_ERR_UNIMPL, "references");
+			if (p->stack.n == 0)
+				return fail(p, XML_ERR_SYNTAX, "a reference "
+					    "may only appear inside an element "
+					    "[43]");
+			if (!parse_reference(p))
+				return 0;
 		} else if (byte_at(p, 0) < 0) {
 			return fail(p, XML_ERR_SYNTAX, seen_root
 				    ? "input ends inside an element"

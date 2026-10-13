@@ -1,11 +1,11 @@
 CASES 2585 catalogued, 9 of them not present in the archive
 CRASHES 0
-SCORE not-wf    207/207  rejected, of 207 judged (669 declined as unimplemented)
+SCORE not-wf    227/227  rejected, of 227 judged (649 declined as unimplemented)
 SCORE valid       0/1    accepted, of 1 judged (590 declined as unimplemented)
-SCORE invalid    55/55   accepted, of 55 judged (99 declined as unimplemented)
+SCORE invalid    58/58   accepted, of 58 judged (96 declined as unimplemented)
 SCORE error    6 cases: 0 rejected, 1 accepted, 5 declined (either verdict conforms)
-DECLINED 1363 of 1627 in-scope cases (84%) are unimplemented productions, not verdicts
-JUDGED 264
+DECLINED 1340 of 1627 in-scope cases (82%) are unimplemented productions, not verdicts
+JUDGED 287
 SHOULD-HAVE-CAUGHT 1
 FAIL valid rmt-e2e-22 E22.xml
 OOS edition1-4   310 cases,    0 match the catalogue anyway  (EDITION excludes 5: superseded name or char rules)

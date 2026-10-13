@@ -131,7 +131,7 @@ Ranked by how little we control them.
 - [x] the XML declaration (the doctype and the rest of the prolog remain)
   - why: version, encoding and standalone each have their own grammar, and
     `encoding="UTF-16"` is where "reject what you cannot do" lands.
-- [ ] character references and attribute value normalisation
+- [x] character and entity references (attribute value normalisation is not observable without a value API, so it is not done)
   - why: `&#x0;`, surrogates and `&#xFFFE;` are invalid characters, not
     invalid syntax, and normalisation is where tab becomes space.
 - [ ] internal DTD subset, entity declarations, entity expansion
