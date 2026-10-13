@@ -128,7 +128,7 @@ Ranked by how little we control them.
   - why: `--` inside a comment and `<?xml` as a PI target are both errors.
 - [x] CDATA sections
   - why: the only place `]]>` terminates rather than offends.
-- [ ] the XML declaration and the prolog
+- [x] the XML declaration (the doctype and the rest of the prolog remain)
   - why: version, encoding and standalone each have their own grammar, and
     `encoding="UTF-16"` is where "reject what you cannot do" lands.
 - [ ] character references and attribute value normalisation

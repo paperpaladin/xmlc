@@ -134,12 +134,38 @@ st 1 '<a>]]></a>'                  "']]>' outside CDATA is still refused [14]"
 # The XML declaration is production [23], not a PI, though it opens '<?'.
 # Routing it through the PI parser made it fail the reserved-target rule, so
 # every document carrying one -- most of the suite -- was REJECTED rather
-# than declined: 183 confident wrong answers about valid documents.
-st 3 '<?xml version="1.0"?><a/>'   'the XML declaration is not implemented [23]'
-st 1 ' <?xml version="1.0"?><a/>'  'not at byte 0 it is a PI, so target reserved'
+# than declined: 183 confident wrong answers about valid documents. It has
+# its own section below now that it is implemented; what stays here is the
+# distinction itself, which is what went wrong.
+st 0 '<?xml version="1.0"?><a/>'   'a declaration at byte 0 is [23], not a PI'
+st 1 ' <?xml version="1.0"?><a/>'  'one byte later it is a PI, so target reserved'
 st 1 'x<a/>'                       'character data before the root'
 st 1 '<a/><b/>'                    'a second root element'
 st 1 '<!-- c -->'                  'a comment alone is not a document [1]'
+
+printf '\n--- the XML declaration [23]\n'
+st 0 '<?xml version="1.0"?><a/>'                  'a plain declaration'
+st 0 "<?xml version='1.0'?><a/>"                  'single quotes [24]'
+st 0 '<?xml version="1.0" encoding="UTF-8"?><a/>' 'with an encoding [80]'
+st 0 '<?xml version="1.0" encoding="utf-8"?><a/>' 'encoding names are case-insensitive'
+st 0 '<?xml version="1.0" standalone="yes"?><a/>' 'with standalone [32]'
+st 0 '<?xml version="1.0" encoding="UTF-8" standalone="no"?><a/>' 'all three, in order'
+st 0 '<?xml version = "1.0" ?><a/>'               'Eq allows space either side [25]'
+st 1 '<?xml encoding="UTF-8"?><a/>'               'version is required [24]'
+st 1 '<?xml version="2.0"?><a/>'                  "a version number is '1.' digits [26]"
+st 1 '<?xml version=1.0?><a/>'                    'the version must be quoted [24]'
+st 1 '<?xml version="1.0" standalone="maybe"?><a/>' "standalone is 'yes' or 'no' [32]"
+st 1 '<?xml version="1.0" standalone="yes" encoding="UTF-8"?><a/>' 'the order is fixed [23]'
+st 1 '<?xml version="1.0" encoding="1bad"?><a/>'  'an encoding name starts with a letter [81]'
+st 1 '<?xml version="1.0"<a/>'                    'unterminated declaration'
+# Both of these are W3C case o-p32fail3's shape: [80] and [32] each BEGIN
+# with S, so the whitespace is part of the production, not decoration. This
+# accepted both until the suite said otherwise.
+st 1 '<?xml version="1.0"standalone="yes"?><a/>'  'S is required before standalone [32]'
+st 1 '<?xml version="1.0"encoding="UTF-8"?><a/>'  'S is required before encoding [80]'
+# Declared but unreadable is not the same as malformed.
+st 3 '<?xml version="1.10"?><a/>'                 'XML 1.10 is a legal version this parser will not judge [26]'
+st 3 '<?xml version="1.0" encoding="EUC-JP"?><a/>' 'a declared encoding xmlc cannot decode [80]'
 acc '<a b="1" c="2"/>'      'two attributes'
 acc "<a b='1'/>"            'single-quoted attribute value'
 acc '<a b="1\047"/>'        "an apostrophe inside a double-quoted value"

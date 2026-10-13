@@ -563,6 +563,128 @@ static int parse_cdata(P *p)
 	}
 }
 
+/* A quoted value in the XML declaration.  Returns the contents as a slice.
+ * Declaration values are not attribute values: no references, no newline
+ * normalisation, and the grammar for each one is its own production. */
+static int xd_quoted(P *p, slice *out, const char *what)
+{
+	int q = byte_at(p, 0);
+	size_t start;
+
+	if (q != '"' && q != '\'')
+		return fail(p, XML_ERR_SYNTAX, what);
+	p->i += 1;
+	start = p->i;
+	while (p->i < p->n && p->b[p->i] != q)
+		p->i++;
+	if (p->i >= p->n)
+		return fail(p, XML_ERR_SYNTAX, "unterminated quoted value in "
+			    "the XML declaration [23]");
+	out->b = p->b + start;
+	out->n = p->i - start;
+	p->i += 1;
+	return 1;
+}
+
+/* [23] XMLDecl      ::= '<?xml' VersionInfo EncodingDecl? SDDecl? '?>'
+ * [24] VersionInfo  ::= S 'version' Eq ("'" VersionNum "'" | '"' VersionNum '"')
+ * [26] VersionNum   ::= '1.' [0-9]+
+ * [80] EncodingDecl ::= S 'encoding' Eq ('"' EncName '"' | "'" EncName "'")
+ * [81] EncName      ::= [A-Za-z] ([A-Za-z0-9._] | '-')*
+ * [32] SDDecl       ::= S 'standalone' Eq (('"' ('yes'|'no') '"') | ...)
+ *
+ * The order is fixed and version is mandatory, which is most of what there is
+ * to get wrong.  Entered with p->i at byte 0 and '<?xml' plus whitespace
+ * already confirmed by the caller. */
+static int parse_xmldecl(P *p)
+{
+	slice v;
+	size_t k;
+	int had_s;
+
+	p->i += 5;			/* '<?xml' */
+
+	/* VersionInfo, required. */
+	skip_s(p);
+	if (!eat(p, "version"))
+		return fail(p, XML_ERR_SYNTAX, "the XML declaration must "
+			    "begin with a version [24]");
+	if (!eat_eq(p))
+		return 0;
+	if (!xd_quoted(p, &v, "the version must be quoted [24]"))
+		return 0;
+	/* [26] VersionNum ::= '1.' [0-9]+ */
+	if (v.n < 3 || v.b[0] != '1' || v.b[1] != '.')
+		return fail(p, XML_ERR_SYNTAX, "a version number is '1.' "
+			    "followed by digits [26]");
+	for (k = 2; k < v.n; k++)
+		if (v.b[k] < '0' || v.b[k] > '9')
+			return fail(p, XML_ERR_SYNTAX, "a version number is "
+				    "'1.' followed by digits [26]");
+	/* An XML 1.1 document is not something this parser should judge as
+	 * 1.0; the suite excludes those cases and so does this. */
+	if (!(v.n == 3 && v.b[2] == '0'))
+		return fail(p, XML_ERR_UNIMPL, "only XML 1.0 is implemented "
+			    "[26]");
+
+	/* EncodingDecl, optional.  Recorded and not acted on: this parser
+	 * reads UTF-8 only, and a document that declares something else is
+	 * not one it can judge rather than one it should reject. */
+	/* [80] EncodingDecl and [32] SDDecl each BEGIN with S, so the
+	 * whitespace is part of the production and not decoration between
+	 * tokens. Tracking whether it was there is the difference between
+	 * refusing '<?xml version="1.0"standalone="yes"?>' and accepting it,
+	 * which is W3C case o-p32fail3 and which this did accept. */
+	had_s = skip_s(p) > 0;
+
+	if (had_s && lit(p, "encoding")) {
+		p->i += 8;
+		if (!eat_eq(p))
+			return 0;
+		if (!xd_quoted(p, &v, "the encoding must be quoted [80]"))
+			return 0;
+		if (v.n == 0 ||
+		    !((v.b[0] >= 'A' && v.b[0] <= 'Z') ||
+		      (v.b[0] >= 'a' && v.b[0] <= 'z')))
+			return fail(p, XML_ERR_SYNTAX, "an encoding name "
+				    "starts with a letter [81]");
+		for (k = 1; k < v.n; k++) {
+			unsigned char c = v.b[k];
+			if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
+			      || (c >= '0' && c <= '9') || c == '.'
+			      || c == '_' || c == '-'))
+				return fail(p, XML_ERR_SYNTAX, "illegal "
+					    "character in an encoding name "
+					    "[81]");
+		}
+		if (!(v.n == 5 && (v.b[0] | 32) == 'u' && (v.b[1] | 32) == 't'
+		      && (v.b[2] | 32) == 'f' && v.b[3] == '-'
+		      && v.b[4] == '8'))
+			return fail(p, XML_ERR_UNIMPL, "only UTF-8 input is "
+				    "implemented [80]");
+		had_s = skip_s(p) > 0;
+	}
+
+	/* SDDecl, optional. */
+	if (had_s && lit(p, "standalone")) {
+		p->i += 10;
+		if (!eat_eq(p))
+			return 0;
+		if (!xd_quoted(p, &v, "standalone must be quoted [32]"))
+			return 0;
+		if (!((v.n == 3 && memcmp(v.b, "yes", 3) == 0) ||
+		      (v.n == 2 && memcmp(v.b, "no", 2) == 0)))
+			return fail(p, XML_ERR_SYNTAX, "standalone is 'yes' "
+				    "or 'no' [32]");
+		skip_s(p);
+	}
+
+	if (!eat(p, "?>"))
+		return fail(p, XML_ERR_SYNTAX, "expected '?>' at the end of "
+			    "the XML declaration [23]");
+	return 1;
+}
+
 /* [1]  document ::= prolog element Misc*
  *
  * Iterative.  The element stack is on the heap, so nesting depth never
@@ -596,8 +718,8 @@ static int parse_document(P *p)
 	 * The whitespace test is the grammar: VersionInfo begins with S, so
 	 * '<?xmlfoo?>' is a PI whose target is the legal Name 'xmlfoo', and
 	 * only the exact three-letter name is reserved. */
-	if (lit(p, "<?xml") && is_s(byte_at(p, 5)))
-		return fail(p, XML_ERR_UNIMPL, "the XML declaration [23]");
+	if (lit(p, "<?xml") && is_s(byte_at(p, 5)) && !parse_xmldecl(p))
+		return 0;
 
 	skip_s(p);
 	if (byte_at(p, 0) != '<')

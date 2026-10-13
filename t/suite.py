@@ -106,6 +106,8 @@ CAN_DECODE = {b"utf-8", b"us-ascii", b"ascii"}
 
 OOS_REASON = {
     "xml11": "VERSION=1.1 or RECOMMENDATION=XML1.1/NS1.1: xmlc is 1.0 only",
+    "namespaces": "RECOMMENDATION=NS1.0: namespace well-formedness is a "
+                  "separate specification, and xmlc checks XML 1.0",
     "edition1-4": "EDITION excludes 5: superseded name or char rules",
     "extentity": "ENTITIES!=none: needs an external entity resolved",
     "encoding": "UTF-16, or a declared encoding xmlc refuses by design",
@@ -135,6 +137,20 @@ def classify(t):
     if t.get("VERSION") == "1.1" or t.get("RECOMMENDATION") in ("XML1.1",
                                                                 "NS1.1"):
         return "xml11"
+    # Namespaces in XML is a different recommendation from XML 1.0, and a
+    # document can be perfectly well-formed XML while breaking every rule in
+    # it -- "<a:b/>" with no binding for a: is the standard example. xmlc
+    # checks XML 1.0 well-formedness and says so, so judging these would be
+    # answering a question it was not asked.
+    #
+    # NS1.1 was already excluded here, by this same reasoning, from the other
+    # direction. The catalogue marks these RECOMMENDATION=NS1.0 itself, which
+    # is the standard this module sets for itself at the top: out of scope has
+    # to be a claim the suite makes about its own test, not an excuse invented
+    # for a failure. They became visible when the XML declaration landed and
+    # these documents started parsing far enough to be judged.
+    if t.get("RECOMMENDATION") == "NS1.0":
+        return "namespaces"
     ed = t.get("EDITION")
     if ed and "5" not in ed.split():
         return "edition1-4"
