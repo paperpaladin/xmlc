@@ -186,6 +186,38 @@ st 1 '<a>&#0;</a>'                     'character reference to NUL [66]'
 st 1 '<a>&#xD800;</a>'                 'character reference to a surrogate [66]'
 st 1 '<a>&#x110000;</a>'               'character reference past the Unicode range [66]'
 st 1 '<a>&#99999999999999;</a>'        'a character reference too large to hold [66]'
+
+printf '\n--- the README documents exit statuses, so run them\n'
+# README.md tabulates documents against the status xmlc gives them. That is a
+# test suite nobody runs, and it had already gone stale once -- it described
+# comments, PIs, CDATA and the declaration as unimplemented after all four
+# landed. Every row of the form "<doc>   N   comment" is executed here and
+# its status compared, so the file cannot drift from the binary it describes.
+readme_rows=0
+readme_bad=0
+while IFS= read -r line; do
+	# A heredoc fed by a command substitution that matched nothing still
+	# delivers one empty line, which counted as a row and left the floor
+	# below satisfied by nothing at all -- reporting "'' gives 1, the file
+	# says" instead of saying the table format had changed.
+	[ -n "$line" ] || continue
+	doc=${line%%@@*}
+	want=${line##*@@}
+	printf '%s' "$doc" | ./xmlc >/dev/null 2>&1
+	got=$?
+	readme_rows=$((readme_rows + 1))
+	if [ "$got" != "$want" ]; then
+		readme_bad=$((readme_bad + 1))
+		nok "README: '$doc' gives $got, the file says $want"
+	fi
+done <<EOF
+$(sed -nE 's/^(<[^ ].*[^ ])[[:space:]]{2,}([013])[[:space:]]{2,}[^ ].*$/\1@@\2/p' README.md)
+EOF
+if [ "$readme_rows" -lt 15 ]; then
+	nok "README: only $readme_rows documented statuses found, expected at least 15 (did the table format change?)"
+elif [ "$readme_bad" -eq 0 ]; then
+	ok "README: all $readme_rows documented exit statuses match the binary"
+fi
 acc '<a b="1" c="2"/>'      'two attributes'
 acc "<a b='1'/>"            'single-quoted attribute value'
 acc '<a b="1\047"/>'        "an apostrophe inside a double-quoted value"

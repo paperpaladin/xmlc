@@ -2,9 +2,9 @@
 
 An XML 1.0 (Fifth Edition) well-formedness checker in one C11 file.
 
-**It does not implement entity or character references, or the DOCTYPE
-declaration.** It declines 84% of the W3C conformance suite rather than
-guessing at it, and the exit status says which kind of answer you got:
+**It does not implement the DOCTYPE declaration or its internal subset.** It
+declines 82% of the W3C conformance suite rather than guessing at it, and the
+exit status says which kind of answer you got:
 
 ```
 xmlc FILE
@@ -27,21 +27,22 @@ same as "well-formed", so every W3C case using a production the parser could
 not read counted as a pass. Separating the two gave:
 
 ```
-SCORE not-wf    207/207  rejected, of 207 judged (669 declined as unimplemented)
+SCORE not-wf    227/227  rejected, of 227 judged (649 declined as unimplemented)
 SCORE valid       0/1    accepted, of 1 judged (590 declined as unimplemented)
-SCORE invalid    55/55   accepted, of 55 judged (99 declined as unimplemented)
+SCORE invalid    58/58   accepted, of 58 judged (96 declined as unimplemented)
 SCORE error    6 cases: 0 rejected, 1 accepted, 5 declined (either verdict conforms)
-DECLINED 1363 of 1627 in-scope cases (84%) are unimplemented productions, not verdicts
-JUDGED 264
+DECLINED 1340 of 1627 in-scope cases (82%) are unimplemented productions, not verdicts
+JUDGED 287
 SHOULD-HAVE-CAUGHT 1
 ```
 
 The count of cases the parser *should* have caught and did not went from 749
 to 2 -- not because anything was fixed, but because the number finally meant
 something. `897/897` became `98/98 of 121 judged`, which is a smaller claim
-and a true one. Comments, processing instructions, CDATA sections and the XML
-declaration have since taken it to 264 judged with the same should-have-caught
-count of 1.
+and a true one. Comments, processing instructions, CDATA sections, the XML
+declaration and references have since taken it to 287 judged with the same
+should-have-caught count of 1 -- judging well over twice as many cases
+without getting any more of them wrong.
 
 `valid 0/1` is there on purpose too: of the one valid document currently in
 scope, `xmlc` accepts none. That is a real gap, printed every run.
@@ -69,7 +70,7 @@ catalogue marks them `RECOMMENDATION=NS1.0` itself -- out of scope has to be
 a claim the suite makes about its own test, not an excuse invented for a
 failure, and the same reasoning already excluded NS1.1.
 
-`make test`: **127 passed, 0 failed.** The suite also pins the score, so a
+`make test`: **143 passed, 0 failed.** The suite also pins the score, so a
 change in what is judged or declined fails rather than silently moving the
 denominator.
 
@@ -96,6 +97,7 @@ than printing something approximate that could be diffed by mistake.
 <a><?pi data?></a>                0    processing instruction [16]
 <a><![CDATA[<b>&amp;]]></a>       0    CDATA section [18], markup inside is text
 <?xml version="1.0"?><a/>         0    XML declaration [23]
+<a>&amp;&#65;&#x41;</a>           0    references [66] [68]
 
 <a>x</b>                          1    mismatched tags
 <a/><b/>                          1    a second root element
@@ -105,6 +107,9 @@ than printing something approximate that could be diffed by mistake.
 <a><!---></a>                     1    a comment may not end '--->' [15]
 <a><?xml d?></a>                  1    'xml' is a reserved PI target [17]
 <?xml version="1.0"standalone="yes"?><a/>   1    [32] begins with whitespace
+<a>&foo;</a>                      1    undeclared entity (WFC: Entity Declared)
+<a>&#0;</a>                       1    not a Char (WFC: Legal Character)
+<a>&#xD800;</a>                   1    a surrogate is not a Char either
 ```
 
 - the UTF-8 decoder and the Fifth Edition `Char`, `NameStartChar` and
@@ -115,20 +120,20 @@ than printing something approximate that could be diffed by mistake.
 - comments, processing instructions and CDATA sections
 - the XML declaration: version, encoding and standalone, each with its own
   grammar and in that fixed order
+- character and entity references, with both of their well-formedness
+  constraints: a character reference must denote a `Char`, and an entity must
+  have been declared -- which with no DTD means the five predefined ones
 
 ## What is declined, exactly
 
 ```
-<a>&amp;</a>                      3    entity reference
-<a>&#65;</a>                      3    character reference
-<a b="&amp;"/>                    3    a reference in an attribute value
 <!DOCTYPE a><a/>                  3    DOCTYPE and the internal subset
 <?xml version="1.10"?><a/>        3    a legal version this parser will not judge
 <?xml version="1.0" encoding="EUC-JP"?><a/>   3   an encoding it cannot decode
 ```
 
-References are declined including the five predefined entities, so even
-`&amp;` gets exit 3. That and the DOCTYPE are most of the remaining 84%.
+The DOCTYPE is most of the remaining 82%, and it is the next thing: almost
+every `valid` case in the suite carries one.
 
 The last two matter for a different reason: those documents are not malformed,
 they are *unreadable by this parser*. Rejecting them would be a claim about
@@ -137,9 +142,8 @@ those is true.
 
 ## Still to come
 
-Entity and character references, and then the DOCTYPE declaration with its
-internal subset -- which between them account for most of the 1363 declined
-cases. `PLAN.md` holds the ordered list; each item names the productions it
+The DOCTYPE declaration and its internal subset, which account for most of
+the 1340 declined cases. `PLAN.md` holds the ordered list; each item names the productions it
 would add and the score it would move.
 
 GPL-3.0-or-later. The vendored W3C suite keeps its own licence beside it.
