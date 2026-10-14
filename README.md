@@ -59,8 +59,7 @@ any.
 ## The oracle
 
 The W3C XML Conformance Test Suite: 1674 in-scope cases, plus 911 excluded
-because they target XML 1.1 or namespaces, which this does not claim. The
-vendored tarball is verified by sha256 before use, so the corpus cannot drift
+because they target XML 1.1 or namespaces, which this does not claim. That vendored tarball is verified by sha256 before use, so the corpus cannot drift
 underneath the score.
 
 Namespace tests are excluded. Namespaces in XML is a separate

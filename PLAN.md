@@ -59,7 +59,7 @@ Both halves are checked by something outside this repo.  The first half is
 scored against the W3C XML Conformance Test Suite: 2585 catalogued cases we
 did not write, with the score published per directory and every failure named
 and classified as "should have caught" or "out of scope for a non-validating
-parser".  The second half is checked by a truncation sweep under
+parser".  Its second half is checked by a truncation sweep under
 `-fsanitize=address,undefined` and by an entity expansion cap that turns a
 billion-laughs bomb into an error return, not an OOM.
 
