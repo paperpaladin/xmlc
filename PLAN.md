@@ -80,7 +80,7 @@ Ranked by how little we control them.
    machine-readable catalogue that classifies each one.  `valid/` must be
    accepted, `not-wf/` must be rejected, `invalid/` must be *accepted* because
    a non-validating parser is not asked to notice, `error/` may go either way.
-   120 of the `valid/sa` cases ship an expected canonical form, which is a
+   120 of the `valid/sa` cases ship an expected canonical form, a
    second, stronger check than accept/reject: it compares the parse.
 2. Python's `xml.parsers.expat`.  A second independent implementation in
    the standard library, written by James Clark, differentialled two ways:

@@ -38,7 +38,7 @@ SHOULD-HAVE-CAUGHT 1
 
 The count of cases the parser *should* have caught and did not went from 749
 to 2: not because anything was fixed, but because the number finally meant
-something. `897/897` became `98/98 of 121 judged`, which is a smaller claim
+something. `897/897` became `98/98 of 121 judged`, a smaller claim
 and a true one. Comments, processing instructions, CDATA sections, the XML
 declaration and references have since taken it to 287 judged with the same
 should-have-caught count of 1, judging well over twice as many cases
