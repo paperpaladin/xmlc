@@ -43,7 +43,7 @@ declined with exit 3, not judged** (1553 of 1674).  Of the 121 cases
 xmlc does judge, 119 agree with the suite.
 
 The sections below describe the finished tool.  They are written in the
-present tense because they are a specification, not a report: of the four
+present tense because they are a specification, not a report. Of the four
 oracles, only the first is wired up.  The expat differential, the sanitizer
 truncation sweep and the canonical round-trip are items 36, 39 and 28, all
 still open, and `t/run.sh` does not run them.  Nothing in this repo has

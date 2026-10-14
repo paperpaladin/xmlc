@@ -64,7 +64,7 @@ vendored tarball is verified by sha256 before use, so the corpus cannot drift
 underneath the score.
 
 Namespace tests are excluded. Namespaces in XML is a separate
-recommendation: a document can be flawless XML 1.0 and break every rule in it,
+recommendation. A document can be flawless XML 1.0 and break every rule in it,
 so judging them would answer a question this parser was not asked. The
 catalogue marks them `RECOMMENDATION=NS1.0` itself, out of scope has to be
 a claim the suite makes about its own test, not an excuse invented for a
@@ -135,7 +135,7 @@ than printing something approximate that could be diffed by mistake.
 The DOCTYPE is most of the remaining 82%, and it is the next thing: almost
 every `valid` case in the suite carries one.
 
-The last two matter for a different reason: those documents are not malformed,
+The last two matter for a different reason. Those documents are not malformed,
 they are *unreadable by this parser*. Rejecting them would be a claim about
 the document. Declining them is a claim about the parser, and only one of
 those is true.
