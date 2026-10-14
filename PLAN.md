@@ -30,7 +30,7 @@ form so two parses can be diffed byte for byte.
 - Not in the contract: DTD *validation*, external entities or an external DTD
   subset (not fetched, and their absence is handled per the spec's
   relaxations), XML 1.1, XML Schema, Relax NG, XInclude, XPath, UTF-16, any
-  encoding beyond UTF-8 and US-ASCII, XML Canonicalisation (C14N -- a
+  encoding beyond UTF-8 and US-ASCII, XML Canonicalisation (C14N: a
   different thing from the canonical form above), or a mutable document tree.
 
 ## Status, as of the last commit
@@ -39,7 +39,7 @@ Two of the 42 items below are done: the catalogue-driven scorer and the UTF-8
 reader with the Char/Name classes.  Elements parse well enough to produce a
 verdict, but comments, processing instructions, CDATA, the prolog, references,
 the DTD subset and namespaces do not, so **93% of the in-scope suite is
-declined with exit 3 rather than judged** (1553 of 1674).  Of the 121 cases
+declined with exit 3, not judged** (1553 of 1674).  Of the 121 cases
 xmlc does judge, 119 agree with the suite.
 
 The sections below describe the finished tool.  They are written in the
@@ -56,14 +56,14 @@ the Namespaces 1.0 constraints, and no input can make the parser crash, read
 out of bounds, leak, or expand without bound.**
 
 Both halves are checked by something outside this repo.  The first half is
-scored against the W3C XML Conformance Test Suite -- 2585 catalogued cases we
-did not write -- with the score published per directory and every failure named
+scored against the W3C XML Conformance Test Suite: 2585 catalogued cases we
+did not write, with the score published per directory and every failure named
 and classified as "should have caught" or "out of scope for a non-validating
 parser".  The second half is checked by a truncation sweep under
 `-fsanitize=address,undefined` and by an entity expansion cap that turns a
-billion-laughs bomb into an error return rather than an OOM.
+billion-laughs bomb into an error return, not an OOM.
 
-**Not aiming at 100%.** The suite contains DTD-validation cases, XML 1.1
+Not aiming at 100%. The suite contains DTD-validation cases, XML 1.1
 cases, fourth-edition name rules and external-entity cases that a
 non-validating UTF-8-only XML 1.0 Fifth Edition parser is not required to
 catch. Claiming those would be dishonest, so the scope filter is written in
@@ -74,7 +74,7 @@ terms of the suite's *own* `TYPE`, `ENTITIES`, `VERSION`, `EDITION` and
 
 Ranked by how little we control them.
 
-1. **The W3C XML Conformance Test Suite** (`xmlts20130923`, vendored whole and
+1. The W3C XML Conformance Test Suite (`xmlts20130923`, vendored whole and
    unmodified; see `t/XMLTS-PROVENANCE`).  2585 cases from Sun, OASIS/NIST,
    IBM, Fuji Xerox, James Clark and the University of Edinburgh, with a
    machine-readable catalogue that classifies each one.  `valid/` must be
@@ -82,32 +82,32 @@ Ranked by how little we control them.
    a non-validating parser is not asked to notice, `error/` may go either way.
    120 of the `valid/sa` cases ship an expected canonical form, which is a
    second, stronger check than accept/reject: it compares the parse.
-2. **Python's `xml.parsers.expat`.**  A second independent implementation in
+2. Python's `xml.parsers.expat`.  A second independent implementation in
    the standard library, written by James Clark, differentialled two ways:
    accept/reject over the whole suite, and the full parse event sequence over
    every mutually accepted document plus generated ones.  Disagreements have
    to be adjudicated against the spec and pinned, not papered over.
-3. **The sanitizers.**  `-fsanitize=address,undefined` over a byte-by-byte
+3. The sanitizers.  `-fsanitize=address,undefined` over a byte-by-byte
    truncation sweep and over the whole suite.  Not a correctness oracle, but
    the only authority on memory safety that is not our own opinion.
-4. **Canonical round-trip.**  parse -> canonical form -> parse -> canonical
+4. Canonical round-trip.  parse -> canonical form -> parse -> canonical
    form must be a fixed point, and the second must be byte-identical.
    Self-consistency only, so it ranks last.
 
 ## Non-goals
 
-- **DTD validation.**  No content model checking, no `ID`/`IDREF` resolution,
+- DTD validation.  No content model checking, no `ID`/`IDREF` resolution,
   no required-attribute enforcement.  `invalid/` cases are accepted on
-  purpose; that is what "non-validating" means.
-- **External entities and the external DTD subset.**  Never fetched, not even
+  purpose. That is what "non-validating" means.
+- External entities and the external DTD subset.  Never fetched, not even
   from the local filesystem.  Where the spec relaxes a constraint because the
   processor did not read the external subset, `xmlc` takes the relaxation.
-- **XML 1.1.**  `version="1.1"` is rejected.  NEL and the extra name
+- XML 1.1.  `version="1.1"` is rejected.  NEL and the extra name
   characters are not implemented.
-- **Encodings other than UTF-8 and US-ASCII.**  UTF-16 is detected from its
-  BOM and rejected with a named error rather than misread.
-- **Schema languages, XInclude, XPath, XSLT, C14N, XML Catalogs.**
-- **Streaming.**  One buffer in, one verdict out.
+- Encodings other than UTF-8 and US-ASCII.  UTF-16 is detected from its
+  BOM and rejected with a named error, not misread.
+- Schema languages, XInclude, XPath, XSLT, C14N, XML Catalogs.
+- Streaming.  One buffer in, one verdict out.
 
 ## Commit sequence
 
@@ -127,7 +127,7 @@ Ranked by how little we control them.
 - [x] comments and processing instructions
   - why: `--` inside a comment and `<?xml` as a PI target are both errors.
 - [x] CDATA sections
-  - why: the only place `]]>` terminates rather than offends.
+  - why: the only place `]]>` terminates, not offends.
 - [x] the XML declaration (the doctype and the rest of the prolog remain)
   - why: version, encoding and standalone each have their own grammar, and
     `encoding="UTF-16"` is where "reject what you cannot do" lands.
@@ -139,7 +139,7 @@ Ranked by how little we control them.
     same-entity nesting constraint come from.
 - [ ] the entity expansion cap
   - why: billion laughs.  A depth and a byte cap, with a test that the bomb
-    exits 1 rather than being killed by the OOM reaper.
+    exits 1 instead of being killed by the OOM reaper.
 - [ ] ATTLIST, attribute defaults, non-CDATA attribute normalisation
   - why: a non-validating processor still has to supply defaults from the
     internal subset, and the suite's canonical output files prove it.

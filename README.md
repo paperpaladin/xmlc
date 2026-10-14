@@ -2,8 +2,8 @@
 
 An XML 1.0 (Fifth Edition) well-formedness checker in one C11 file.
 
-**It does not implement the DOCTYPE declaration or its internal subset.** It
-declines 82% of the W3C conformance suite rather than guessing at it, and the
+It does not implement the DOCTYPE declaration or its internal subset. It
+declines 82% of the W3C conformance suite instead of guessing at it, and the
 exit status says which kind of answer you got:
 
 ```
@@ -37,18 +37,18 @@ SHOULD-HAVE-CAUGHT 1
 ```
 
 The count of cases the parser *should* have caught and did not went from 749
-to 2 -- not because anything was fixed, but because the number finally meant
+to 2: not because anything was fixed, but because the number finally meant
 something. `897/897` became `98/98 of 121 judged`, which is a smaller claim
 and a true one. Comments, processing instructions, CDATA sections, the XML
 declaration and references have since taken it to 287 judged with the same
-should-have-caught count of 1 -- judging well over twice as many cases
+should-have-caught count of 1, judging well over twice as many cases
 without getting any more of them wrong.
 
 `valid 0/1` is there on purpose too: of the one valid document currently in
 scope, `xmlc` accepts none. That is a real gap, printed every run.
 
 Adding the XML declaration demonstrated the point twice over. Routed through
-the PI parser -- it does open `<?` -- it failed production [17]'s reserved
+the PI parser. It does open `<?`, it failed production [17]'s reserved
 target rule, so every document carrying a declaration was *rejected* as
 malformed: 676 judged, 183 of them confidently wrong. It is production [23],
 not a PI, and `xml` is reserved as a target precisely so the two cannot be
@@ -58,7 +58,7 @@ any.
 
 ## The oracle
 
-The W3C XML Conformance Test Suite -- 1674 in-scope cases, plus 911 excluded
+The W3C XML Conformance Test Suite: 1674 in-scope cases, plus 911 excluded
 because they target XML 1.1 or namespaces, which this does not claim. The
 vendored tarball is verified by sha256 before use, so the corpus cannot drift
 underneath the score.
@@ -66,12 +66,12 @@ underneath the score.
 Namespace tests are excluded. Namespaces in XML is a separate
 recommendation: a document can be flawless XML 1.0 and break every rule in it,
 so judging them would answer a question this parser was not asked. The
-catalogue marks them `RECOMMENDATION=NS1.0` itself -- out of scope has to be
+catalogue marks them `RECOMMENDATION=NS1.0` itself, out of scope has to be
 a claim the suite makes about its own test, not an excuse invented for a
 failure, and the same reasoning already excluded NS1.1.
 
 `make test`: **143 passed, 0 failed.** The suite also pins the score, so a
-change in what is judged or declined fails rather than silently moving the
+change in what is judged or declined fails instead of silently moving the
 denominator.
 
 ## Two narrower modes
@@ -122,7 +122,7 @@ than printing something approximate that could be diffed by mistake.
   grammar and in that fixed order
 - character and entity references, with both of their well-formedness
   constraints: a character reference must denote a `Char`, and an entity must
-  have been declared -- which with no DTD means the five predefined ones
+  have been declared, which with no DTD means the five predefined ones
 
 ## What is declined, exactly
 
@@ -137,7 +137,7 @@ every `valid` case in the suite carries one.
 
 The last two matter for a different reason: those documents are not malformed,
 they are *unreadable by this parser*. Rejecting them would be a claim about
-the document; declining them is a claim about the parser, and only one of
+the document. Declining them is a claim about the parser, and only one of
 those is true.
 
 ## Still to come
