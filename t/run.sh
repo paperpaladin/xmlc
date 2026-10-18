@@ -99,6 +99,24 @@ st() {
 	else nok "$3: exit $got, wanted $1"; fi
 }
 
+# Some rules exist only to give the right diagnostic: delete them and another
+# rule rejects the same document, so `st` cannot tell the difference and a
+# mutation that removes them SURVIVES. Three did, in the first mutation run of
+# the DTD work: WFC: No Recursion (the depth cap catches a cycle anyway) and
+# the conditional-section refusal (the generic "expected a markup declaration"
+# catches it anyway). `err` pins the status AND a substring of the message.
+err() {
+	printf '%b' "$2" | ./xmlc >/dev/null 2>"$SCRATCH/err.txt"
+	got=$?
+	if [ "$got" != "$1" ]; then
+		nok "$4: exit $got, wanted $1"
+	elif ! grep -q "$3" "$SCRATCH/err.txt"; then
+		nok "$4: exit $1, but the diagnostic does not mention '$3': $(cat "$SCRATCH/err.txt")"
+	else
+		ok "$4"
+	fi
+}
+
 acc '<a/>'                  'empty element tag'
 acc '<a></a>'               'start and end tag'
 acc '<a><b/><b/></a>'       'siblings'
@@ -186,6 +204,178 @@ st 1 '<a>&#0;</a>'                     'character reference to NUL [66]'
 st 1 '<a>&#xD800;</a>'                 'character reference to a surrogate [66]'
 st 1 '<a>&#x110000;</a>'               'character reference past the Unicode range [66]'
 st 1 '<a>&#99999999999999;</a>'        'a character reference too large to hold [66]'
+
+printf '\n--- the doctype declaration and the internal subset [28] [28b] [29]\n'
+st 0 '<!DOCTYPE a><a/>'                            'a doctype with no subset [28]'
+st 0 '<!DOCTYPE a [ ]><a/>'                        'an empty internal subset'
+st 0 '<!DOCTYPE a [<!-- c --><?pi x?>]><a/>'       'Comment and PI are markupdecl [29]'
+st 0 '<!DOCTYPE a SYSTEM "a.dtd"><a/>'             'an external subset, noted and not fetched [75]'
+st 0 '<!DOCTYPE a PUBLIC "-//X//DTD//EN" "a.dtd"><a/>' 'PUBLIC needs both literals [75]'
+st 1 '<!DOCTYPE a PUBLIC "-//X//DTD//EN"><a/>'     'PUBLIC without a system literal [75]'
+st 1 '<!DOCTYPE a PUBLIC "{}" "a.dtd"><a/>'        'braces are not PubidChars [13]'
+st 1 '<!DOCTYPEa><a/>'                             'S is required after <!DOCTYPE [28]'
+st 1 '<!DOCTYPE 0a><a/>'                           'the doctype name is a Name [28]'
+st 1 '<!DOCTYPE a [ ]<a/>'                         "unterminated doctype: no '>' [28]"
+st 1 '<!DOCTYPE a [<!ELEMENT a EMPTY>'             'unterminated internal subset [28]'
+st 1 '<a/><!DOCTYPE a>'                            'the doctype belongs in the prolog [22]'
+# Not the same path as the line above: after the root closes, the trailing
+# Misc loop refuses this as content. Inside an element the content loop is
+# still running, and only the prolog check stops it. Deleting that check
+# survived a mutation run with only the line above present.
+st 1 '<a><!DOCTYPE b></a>'                        'nor inside an element [22]'
+st 1 '<!DOCTYPE a><!DOCTYPE b><a/>'                'only one doctype [22]'
+st 1 '<!DOCTYPE a [<a/>]><a/>'                     'content is not a markup declaration [29]'
+# [61] conditionalSect is part of extSubsetDecl.  In the internal subset it is
+# not well-formed, which is a verdict about the document, not a gap here.
+st 1 '<!DOCTYPE a [<![INCLUDE[<!ELEMENT a EMPTY>]]>]><a/>' 'no conditional section in the internal subset [28b]'
+err 1 '<!DOCTYPE a [<![INCLUDE[<!ELEMENT a EMPTY>]]>]><a/>' 'conditional section' 'and it is named as one, not swept into "expected a markup declaration"'
+
+st 0 '<!DOCTYPE a [<!ELEMENT a EMPTY><!ELEMENT b ANY>]><a/>' 'EMPTY and ANY [46]'
+st 0 '<!DOCTYPE a [<!ELEMENT a (#PCDATA)>]><a/>'   'the bare mixed model [51]'
+st 0 '<!DOCTYPE a [<!ELEMENT a (#PCDATA|b)*>]><a/>' 'mixed with names [51]'
+st 0 '<!DOCTYPE a [<!ELEMENT a ((b|c),d*)+>]><a/>'  'nested choice and seq [47] [49] [50]'
+st 1 '<!DOCTYPE a [<!ELEMENT a (#PCDATA|b)>]><a/>' "mixed with names must end ')*' [51]"
+st 1 '<!DOCTYPE a [<!ELEMENT a (b|c,d)>]><a/>'     "a group is all '|' or all ',' [49] [50]"
+st 1 '<!DOCTYPE a [<!ELEMENT a ()>]><a/>'          'an empty group is not a cp [48]'
+st 1 '<!DOCTYPE a [<!ELEMENT a>]><a/>'             'contentspec is required [45]'
+
+st 0 '<!DOCTYPE a [<!ATTLIST a x CDATA #IMPLIED>]><a/>'     'CDATA #IMPLIED [52]'
+st 0 '<!DOCTYPE a [<!ATTLIST a x ID #REQUIRED y IDREFS #IMPLIED>]><a/>' 'two AttDefs [53]'
+st 0 '<!DOCTYPE a [<!ATTLIST a x NMTOKENS "1 2">]><a/>'     'a default value [60]'
+st 0 '<!DOCTYPE a [<!ATTLIST a x (1|-x) #FIXED "1">]><a/>'  'Enumeration takes Nmtokens, not Names [59]'
+st 0 '<!DOCTYPE a [<!NOTATION n SYSTEM "n"><!ATTLIST a x NOTATION (n) #IMPLIED>]><a/>' 'NotationType [58]'
+st 1 '<!DOCTYPE a [<!ATTLIST a x BOGUS #IMPLIED>]><a/>'     'BOGUS is not an AttType [54]'
+st 1 '<!DOCTYPE a [<!ATTLIST a x IDX #IMPLIED>]><a/>'       "'ID' must not match the start of 'IDX' [56]"
+st 1 '<!DOCTYPE a [<!ATTLIST a x CDATA>]><a/>'              'DefaultDecl is required [53]'
+st 1 '<!DOCTYPE a [<!ATTLIST a x CDATA #WRONG>]><a/>'       'that is not a DefaultDecl [60]'
+
+st 0 '<!DOCTYPE a [<!NOTATION n SYSTEM "x">]><a/>'          'NotationDecl, SYSTEM [82]'
+st 0 '<!DOCTYPE a [<!NOTATION n PUBLIC "p">]><a/>'          'PublicID: no system literal here [83]'
+st 0 '<!DOCTYPE a [<!NOTATION n PUBLIC "p" "s">]><a/>'      'or with one [82]'
+st 1 '<!DOCTYPE a [<!NOTATION n "x">]><a/>'                 'SYSTEM or PUBLIC is required [82]'
+
+printf '\n--- entity declarations and expansion [70] [71] [72] [9] [68]\n'
+st 0 '<!DOCTYPE a [<!ENTITY e "x">]><a>&e;</a>'             'an internal entity in content'
+st 0 '<!DOCTYPE a [<!ENTITY e "x">]><a b="&e;"/>'           'and in an attribute value'
+st 0 '<!DOCTYPE a [<!ENTITY e "<b/>">]><a>&e;</a>'          'an entity may carry whole markup'
+st 0 '<!DOCTYPE a [<!ENTITY e "&f;"><!ENTITY f "x">]><a>&e;</a>' 'an entity may reference another'
+st 0 '<!DOCTYPE a [<!ENTITY e "x"><!ENTITY e "y">]><a>&e;</a>' 'a second declaration is ignored, not an error [4.2]'
+st 1 '<!DOCTYPE a [ ]><a>&e;</a>'                           'undeclared, with a subset that could have declared it'
+st 1 '<!DOCTYPE a [<!ENTITY e "<b>">]><a>&e;</a>'           'an entity may not open an element it does not close (4.3.2)'
+st 1 '<!DOCTYPE a [<!ENTITY e "</a><a>">]><a><a>&e;</a></a>' 'nor close one it did not open: the depths match and it is still not content'
+st 1 '<!DOCTYPE a [<!ENTITY e "x">]><a>&e</a>'              "a reference still needs its ';'"
+# 4.5: the replacement text of '&#60;foo>' really is '<foo>', an unclosed tag.
+# Storing the literal and expanding character references at inclusion time
+# instead gets this backwards and accepts the document; the suite caught that
+# through not-wf-sa-103, -090 and -092 and errata-4e 140 and 141.
+st 1 '<!DOCTYPE a [<!ENTITY e "&#60;foo>">]><a>&e;</a>'     'character references are expanded into the replacement text [4.5]'
+st 1 '<!DOCTYPE a [<!ENTITY e "<b x=&#39;&#60;&#39;/>">]><a>&e;</a>' "and the '<' that produces is still forbidden in an attribute value"
+st 0 '<!DOCTYPE a [<!ENTITY e "&#38;#60;">]><a>&e;</a>'     "which is why 4.6 declares lt doubly escaped"
+st 1 '<!DOCTYPE a [<!ENTITY e "&">]><a/>'                   "a bare '&' is not allowed in an entity value [9]"
+st 1 '<!DOCTYPE a [<!ENTITY e "&#x002g;">]><a/>'            'nor a malformed character reference [66] [9]'
+st 1 '<!DOCTYPE a [<!ENTITY e "x" >]><a>&e;</a>&e;'         'a reference outside the root is still content [43]'
+
+st 0 '<!DOCTYPE a [<!ENTITY u SYSTEM "u">]><a>&u;</a>'      'an external entity in content is skipped, not fetched'
+st 1 '<!DOCTYPE a [<!ENTITY u SYSTEM "u">]><a b="&u;"/>'    'but not in an attribute value (WFC: No External Entity References)'
+st 1 '<!DOCTYPE a [<!NOTATION n SYSTEM "n"><!ENTITY u SYSTEM "u" NDATA n>]><a>&u;</a>' 'an unparsed entity may not be referenced (WFC: Parsed Entity)'
+st 1 '<!DOCTYPE a [<!ENTITY % p SYSTEM "p" NDATA n>]><a/>'  'NDATA is not allowed on a parameter entity [74]'
+
+# WFC: Entity Declared is relaxed exactly when a declaration could be sitting
+# somewhere this parser deliberately did not read.  Three documents, one
+# undeclared entity, three different right answers.
+st 1 '<a>&e;</a>'                                           'no DTD at all: the constraint binds'
+st 0 '<!DOCTYPE a SYSTEM "a.dtd"><a>&e;</a>'                'an unread external subset relaxes it [4.1]'
+st 1 '<?xml version="1.0" standalone="yes"?><!DOCTYPE a SYSTEM "a.dtd"><a>&e;</a>' 'standalone="yes" switches it back on [4.1]'
+
+printf '\n--- parameter entities [69] [72] and WFC: PEs in Internal Subset\n'
+st 0 '<!DOCTYPE a [<!ENTITY % p "<!ELEMENT a EMPTY>">%p;]><a/>' 'a PE standing for a whole markup declaration [28a]'
+st 0 '<!DOCTYPE a [<!ENTITY % p "<!ENTITY e &#39;x&#39;>">%p;]><a>&e;</a>' 'the declaration it carries takes effect'
+st 1 '<!DOCTYPE a [<!ENTITY % p "x"><!ENTITY e "%p;">]><a/>'  'a PE may not appear inside a markup declaration here [28a]'
+st 1 '<!DOCTYPE a [<!ELEMENT a %p;>]><a/>'                    'nor anywhere else inside one'
+# An undeclared PE is NOT an error, and this expected 1 until expat said
+# otherwise. 4.1's relaxation is written about the document: "a document with
+# only an internal DTD subset which contains no parameter entity references".
+# The reference itself is one, so by the time there is something to complain
+# about the condition has already stopped holding. Python's expat accepts
+# this document too, with parameter-entity parsing switched off.
+st 0 '<!DOCTYPE a [%p;]><a/>'                                 'an undeclared PE is not an error [4.1], and expat agrees'
+st 0 '<!DOCTYPE a SYSTEM "a.dtd" [%p;]><a/>'                  'nor with an unread external subset'
+
+printf '\n--- WFC: No Recursion [68]\n'
+st 1 '<!DOCTYPE a [<!ENTITY e "&e;">]><a>&e;</a>'            'an entity referencing itself'
+st 1 '<!DOCTYPE a [<!ENTITY e "&f;"><!ENTITY f "&e;">]><a>&e;</a>' 'two entities referencing each other'
+st 1 '<!DOCTYPE a [<!ENTITY e "&f;"><!ENTITY f "&g;"><!ENTITY g "&e;">]><a>&e;</a>' 'and three, transitively'
+# By message, because the depth cap rejects every cycle too: with the
+# recursion test deleted these still exit 1 and only the wording changes.
+err 1 '<!DOCTYPE a [<!ENTITY e "&e;">]><a>&e;</a>' 'No Recursion' 'a cycle is named as recursion, not as depth'
+err 1 '<!DOCTYPE a [<!ENTITY e "&f;"><!ENTITY f "&g;"><!ENTITY g "&e;">]><a>&e;</a>' 'No Recursion' 'transitively too'
+st 1 '<!DOCTYPE a [<!ENTITY e "&e;"><!ELEMENT a (#PCDATA)><!ATTLIST a x CDATA "&e;">]><a/>' 'including through an attribute default'
+
+printf '\n--- the entity expansion caps\n'
+# A bomb test that passes because the machine happened to have enough memory
+# has tested nothing.  These run with the address space capped at 256MB and a
+# 20 second clock, so an uncapped parser fails them: the general-entity bomb
+# never finishes (10^9 inclusions) and the parameter-entity one really does
+# build 10^9 bytes.  Both were measured that way with the cap compiled out.
+python3 - "$SCRATCH" <<'PYBOMB'
+import os
+import sys
+
+d = sys.argv[1]
+
+# The classic billion laughs: nine levels, each ten references to the one
+# below.  Only nine deep, so a depth limit alone would never fire on it.
+e = ['<!ENTITY lol "lol">']
+for i in range(1, 10):
+    prev = 'lol' if i == 1 else 'lol%d' % (i - 1)
+    e.append('<!ENTITY lol%d "%s">' % (i, ''.join('&%s;' % prev
+                                                  for _ in range(10))))
+with open(os.path.join(d, 'bomb-ge.xml'), 'w') as f:
+    f.write('<!DOCTYPE lolz [\n' + '\n'.join(e) + '\n]>\n<lolz>&lol9;</lolz>\n')
+
+# The same shape one level down, where the text is really concatenated
+# instead of being re-read out of a frame.  Each wN carries the declaration
+# of eN, so the PE references inside it are expanded inside a parameter
+# entity, where WFC: PEs in Internal Subset permits them.  '&#37;' is how a
+# '%' gets into the inner literal without being a reference in the outer one.
+pc = '&#37;'
+lines = ['<!ENTITY % e0 "AAAAAAAAAA">']
+for i in range(1, 9):
+    inner = ''.join('%se%d;' % (pc, i - 1) for _ in range(10))
+    lines.append("<!ENTITY %% w%d \"<!ENTITY %s e%d '%s'>\">" % (i, pc, i, inner))
+    lines.append('%%w%d;' % i)
+with open(os.path.join(d, 'bomb-pe.xml'), 'w') as f:
+    f.write('<!DOCTYPE d [\n' + '\n'.join(lines) + '\n]>\n<d/>\n')
+
+# Deep rather than wide: 200 entities, each one reference to the next.  Tiny,
+# so only the depth cap can stop it.
+e = ['<!ENTITY d0 "x">']
+e += ['<!ENTITY d%d "&d%d;">' % (i, i - 1) for i in range(1, 200)]
+with open(os.path.join(d, 'bomb-deep.xml'), 'w') as f:
+    f.write('<!DOCTYPE d [\n' + '\n'.join(e) + '\n]>\n<d>&d199;</d>\n')
+PYBOMB
+
+bomb() {
+	berr=$SCRATCH/bomb.err
+	# AddressSanitizer reserves terabytes of address space at startup and
+	# cannot run under `ulimit -v` at all, so there the clock and the
+	# verdict are the whole test.
+	case "$CFLAGS" in
+	*sanitize*) timeout 20 ./xmlc "$1" 2>"$berr" ;;
+	*)          ( ulimit -v 262144; exec timeout 20 ./xmlc "$1" ) 2>"$berr" ;;
+	esac
+	brc=$?
+	if [ "$brc" != 1 ]; then
+		nok "$2: exit $brc, wanted 1 (124 is the timeout; anything else is the kernel, not us)"
+	elif ! grep -q "$3" "$berr"; then
+		nok "$2: exit 1 but the diagnostic does not mention '$3': $(cat "$berr")"
+	else
+		ok "$2"
+	fi
+}
+bomb "$SCRATCH/bomb-ge.xml"   'billion laughs is an error, not an OOM'       'expansion'
+bomb "$SCRATCH/bomb-pe.xml"   'the parameter-entity bomb is too'             'expansion'
+bomb "$SCRATCH/bomb-deep.xml" 'a 200-deep entity chain hits the depth cap'   'deeper'
 
 printf '\n--- the README documents exit statuses, so run them\n'
 # README.md tabulates documents against the status xmlc gives them. That is a

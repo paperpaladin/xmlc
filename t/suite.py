@@ -13,7 +13,8 @@ parser that does not fetch external entities and only reads UTF-8.
     ENTITIES        none | general | parameter | both
     VERSION         1.0 | 1.1 | absent
     EDITION         "5" | "1 2 3 4" | absent
-    RECOMMENDATION  XML1.0 | XML1.1 | XML1.0-errata2e/3e/4e | NS1.0 | NS1.1
+    RECOMMENDATION  XML1.0 | XML1.1 | XML1.0-errata2e/3e/4e | NS1.0
+                    | NS1.0-errata1e | NS1.1
 
 Writing the scope filter in those terms is the whole point.  "Out of scope" is
 then a claim the suite makes about its own test, not an excuse we invented for
@@ -106,7 +107,7 @@ CAN_DECODE = {b"utf-8", b"us-ascii", b"ascii"}
 
 OOS_REASON = {
     "xml11": "VERSION=1.1 or RECOMMENDATION=XML1.1/NS1.1: xmlc is 1.0 only",
-    "namespaces": "RECOMMENDATION=NS1.0: namespace well-formedness is a "
+    "namespaces": "RECOMMENDATION=NS*: namespace well-formedness is a "
                   "separate specification, and xmlc checks XML 1.0",
     "edition1-4": "EDITION excludes 5: superseded name or char rules",
     "extentity": "ENTITIES!=none: needs an external entity resolved",
@@ -134,8 +135,8 @@ def sniff(path):
 
 def classify(t):
     """None if xmlc is required to get this right, else the reason it is not."""
-    if t.get("VERSION") == "1.1" or t.get("RECOMMENDATION") in ("XML1.1",
-                                                                "NS1.1"):
+    rec = t.get("RECOMMENDATION", "")
+    if t.get("VERSION") == "1.1" or rec in ("XML1.1", "NS1.1"):
         return "xml11"
     # Namespaces in XML is a different recommendation from XML 1.0, and a
     # document can be perfectly well-formed XML while breaking every rule in
@@ -149,7 +150,12 @@ def classify(t):
     # to be a claim the suite makes about its own test, not an excuse invented
     # for a failure. They became visible when the XML declaration landed and
     # these documents started parsing far enough to be judged.
-    if t.get("RECOMMENDATION") == "NS1.0":
+    #
+    # This tested RECOMMENDATION == "NS1.0" exactly, and the catalogue also
+    # uses "NS1.0-errata1e" for three cases. Those three went through the
+    # filter and were scored, so an XML 1.0 parser was being marked wrong for
+    # not implementing xmlns. The prefix is the claim the suite is making.
+    if rec.startswith("NS"):
         return "namespaces"
     ed = t.get("EDITION")
     if ed and "5" not in ed.split():

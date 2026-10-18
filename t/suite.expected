@@ -1,17 +1,17 @@
 CASES 2585 catalogued, 9 of them not present in the archive
 CRASHES 0
-SCORE not-wf    227/227  rejected, of 227 judged (649 declined as unimplemented)
-SCORE valid       0/1    accepted, of 1 judged (590 declined as unimplemented)
-SCORE invalid    58/58   accepted, of 58 judged (96 declined as unimplemented)
-SCORE error    6 cases: 0 rejected, 1 accepted, 5 declined (either verdict conforms)
-DECLINED 1340 of 1627 in-scope cases (82%) are unimplemented productions, not verdicts
-JUDGED 287
+SCORE not-wf    873/873  rejected, of 873 judged (0 declined as unimplemented)
+SCORE valid     589/590  accepted, of 590 judged (1 declined as unimplemented)
+SCORE invalid   154/154  accepted, of 154 judged (0 declined as unimplemented)
+SCORE error    6 cases: 1 rejected, 5 accepted, 0 declined (either verdict conforms)
+DECLINED 1 of 1624 in-scope cases (0%) are unimplemented productions, not verdicts
+JUDGED 1623
 SHOULD-HAVE-CAUGHT 1
 FAIL valid rmt-e2e-22 E22.xml
-OOS edition1-4   310 cases,    0 match the catalogue anyway  (EDITION excludes 5: superseded name or char rules)
-OOS encoding      52 cases,   35 match the catalogue anyway  (UTF-16, or a declared encoding xmlc refuses by design)
-OOS extentity    265 cases,    0 match the catalogue anyway  (ENTITIES!=none: needs an external entity resolved)
+OOS edition1-4   310 cases,    7 match the catalogue anyway  (EDITION excludes 5: superseded name or char rules)
+OOS encoding      52 cases,   46 match the catalogue anyway  (UTF-16, or a declared encoding xmlc refuses by design)
+OOS extentity    265 cases,  184 match the catalogue anyway  (ENTITIES!=none: needs an external entity resolved)
 OOS missing        9 cases,    0 match the catalogue anyway  (file is not in the archive)
-OOS namespaces    48 cases,   16 match the catalogue anyway  (RECOMMENDATION=NS1.0: namespace well-formedness is a separate specification, and xmlc checks XML 1.0)
-OOS xml11        274 cases,    1 match the catalogue anyway  (VERSION=1.1 or RECOMMENDATION=XML1.1/NS1.1: xmlc is 1.0 only)
-OUT-OF-SCOPE 958
+OOS namespaces    51 cases,   25 match the catalogue anyway  (RECOMMENDATION=NS*: namespace well-formedness is a separate specification, and xmlc checks XML 1.0)
+OOS xml11        274 cases,    5 match the catalogue anyway  (VERSION=1.1 or RECOMMENDATION=XML1.1/NS1.1: xmlc is 1.0 only)
+OUT-OF-SCOPE 961

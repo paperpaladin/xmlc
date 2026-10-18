@@ -37,6 +37,7 @@ typedef enum {
 				 * constraint */
 	XML_ERR_DEPTH,		/* element nesting past XMLC_MAX_DEPTH */
 	XML_ERR_MEM,		/* out of memory */
+	XML_ERR_EXPAND,		/* entity expansion past a cap: billion laughs */
 	XML_ERR_UNIMPL,		/* a production this commit does not have yet */
 	XML_ERR_LAST
 } xml_err;
@@ -50,6 +51,7 @@ static const char *const errtext[] = {
 	"well-formedness constraint",
 	"too deeply nested",
 	"out of memory",
+	"entity expansion limit exceeded",
 	"not implemented",
 };
 
@@ -203,6 +205,55 @@ static int sv_push(slicevec *s, slice x)
  * deeper nesting than a million elements. */
 #define XMLC_MAX_DEPTH (1u << 20)
 
+/* ---------------------------------------------------------------- entities
+
+   An internal entity is a name and a replacement text, and the text is kept
+   RAW: character references and general-entity references inside it are left
+   exactly as written and re-scanned when the entity is included.  That is not
+   laziness, it is the only way to keep the distinction the specification
+   draws between markup and data.  '<!ENTITY e "&#60;">' has to put a '<'
+   CHARACTER into the content; expanding the reference at declaration time
+   would store a literal '<' and the inclusion would then read it as the start
+   of a tag, turning a legal document into a malformed one.
+
+   Parameter-entity references inside an entity value ARE expanded at
+   declaration time, because [9] says they are.  */
+typedef struct {
+	unsigned char *name;
+	size_t namen;
+	unsigned char *text;	/* NULL for an external entity: never fetched */
+	size_t textn;
+	int pe;			/* declared '<!ENTITY % name ...>' */
+	int external;
+	int unparsed;		/* ExternalID NDataDecl: not parsed, ever */
+} entity;
+
+/* One suspended input.  The parser reads p->b[p->i..p->n) wherever that
+ * happens to point, so including an entity is a push and reaching the end of
+ * its replacement text is a pop.  Entities therefore cost no C stack either,
+ * same as element nesting. */
+typedef struct {
+	const unsigned char *b;
+	size_t n, i;
+	size_t eidx;		/* index into p->ent, for WFC: No Recursion */
+	size_t sdepth;		/* p->stack.n when this frame was pushed */
+} frame;
+
+/* Billion laughs needs TWO caps and neither one alone would do.  The classic
+ * bomb is nine entities deep and expands to a gigabyte, so a depth limit
+ * never fires on it and a byte limit does.  A 100000-deep chain of one-byte
+ * entities is the other way round.  Self-reference is a third thing again and
+ * is a well-formedness constraint, not a cap.  All three are separate checks.
+ *
+ * shortcut: both numbers are compile-time constants.  Make them options if a
+ * legitimate document ever wants more than 8MB of expansion. */
+#define XMLC_MAX_ENTITY_DEPTH 64
+#define XMLC_MAX_EXPANSION (8u * 1024u * 1024u)
+
+/* Content models nest -- ((a|b),(c|d)) -- and that one production is parsed
+ * recursively, so it gets a ceiling of its own. */
+#define XMLC_MAX_MODEL_DEPTH 256
+
 typedef struct {
 	const unsigned char *b;
 	size_t n, i;
@@ -213,6 +264,22 @@ typedef struct {
 
 	slicevec stack;		/* open element names, outermost first */
 	slicevec att;		/* attribute names of the current start tag */
+
+	entity *ent;		/* everything the internal subset declared */
+	size_t nent, entcap;
+
+	frame *fr;		/* entities currently being included */
+	size_t nfr, frcap;
+	size_t refpos;		/* byte offset in the document of the
+				 * outermost reference, so a diagnostic from
+				 * inside an entity points at a real byte */
+	unsigned long expanded;	/* replacement bytes included so far */
+
+	int has_extsubset;	/* the doctype named an ExternalID */
+	int saw_pe;		/* a parameter-entity reference occurred */
+	int standalone;		/* the declaration said standalone="yes" */
+	int unread;		/* a declaration may exist somewhere this
+				 * parser deliberately did not read */
 } P;
 
 /* How many code points the Char sweep saw.  Printed by -C so the sweep cannot
@@ -224,7 +291,10 @@ static int fail(P *p, xml_err e, const char *detail)
 	if (p->err == XML_OK) {
 		p->err = e;
 		p->detail = detail;
-		p->errpos = p->i;
+		/* Inside an entity p->i indexes the replacement text, which is
+		 * not a position in the file the user named.  Point at the
+		 * outermost reference instead. */
+		p->errpos = p->nfr ? p->refpos : p->i;
 	}
 	return 0;
 }
@@ -255,6 +325,150 @@ static int eat(P *p, const char *s)
 		return 0;
 	p->i += l;
 	return 1;
+}
+
+/* ----------------------------------------------- the entity table and stack */
+
+/* Returns an INDEX, not a pointer: declarations keep arriving while an
+ * included parameter entity is being parsed, and the realloc that grows the
+ * table would leave any pointer handed out earlier dangling.
+ * shortcut: linear scan.  Suite documents declare tens of entities; a hash
+ * table is the upgrade if one ever declares thousands. */
+#define ENT_NONE ((size_t)-1)
+
+static size_t ent_find(P *p, slice nm, int pe)
+{
+	size_t k;
+
+	for (k = 0; k < p->nent; k++)
+		if (p->ent[k].pe == pe && p->ent[k].namen == nm.n &&
+		    memcmp(p->ent[k].name, nm.b, nm.n) == 0)
+			return k;
+	return ENT_NONE;
+}
+
+/* Takes ownership of text.  A second declaration of the same name is not an
+ * error: 4.2 says the first one binds and the rest are ignored. */
+static int ent_add(P *p, slice nm, int pe, unsigned char *text, size_t textn,
+		   int external, int unparsed)
+{
+	entity *e;
+	unsigned char *nmcopy;
+
+	if (ent_find(p, nm, pe) != ENT_NONE) {
+		free(text);
+		return 1;
+	}
+	if (p->nent == p->entcap) {
+		size_t c = p->entcap ? p->entcap * 2 : 16;
+		entity *v = realloc(p->ent, c * sizeof *v);
+		if (!v) {
+			free(text);
+			return 0;
+		}
+		p->ent = v;
+		p->entcap = c;
+	}
+	nmcopy = malloc(nm.n ? nm.n : 1);
+	if (!nmcopy) {
+		free(text);
+		return 0;
+	}
+	memcpy(nmcopy, nm.b, nm.n);
+	e = &p->ent[p->nent++];
+	e->name = nmcopy;
+	e->namen = nm.n;
+	e->text = text;
+	e->textn = textn;
+	e->pe = pe;
+	e->external = external;
+	e->unparsed = unparsed;
+	return 1;
+}
+
+/* Suspend the current input and read the entity's replacement text instead.
+ * refpos is where in the DOCUMENT the outermost reference sits, so that a
+ * diagnostic raised three entities deep still names a byte the reader can
+ * find. */
+static int frame_push(P *p, size_t eidx, size_t refpos)
+{
+	const entity *e = &p->ent[eidx];
+	frame f;
+	size_t k;
+
+	/* WFC: No Recursion.  Direct and transitive are the same test: every
+	 * entity between the outermost reference and this one is on the
+	 * stack, so '&a;' with a -> b -> a is caught at the second a. */
+	for (k = 0; k < p->nfr; k++)
+		if (p->fr[k].eidx == eidx)
+			return fail(p, XML_ERR_WFC, "an entity may not "
+				    "reference itself, directly or through "
+				    "another entity (WFC: No Recursion) [68]");
+	if (p->nfr >= XMLC_MAX_ENTITY_DEPTH)
+		return fail(p, XML_ERR_EXPAND, "entity references nested "
+			    "deeper than the expansion depth cap");
+	p->expanded += e->textn;
+	if (p->expanded > XMLC_MAX_EXPANSION)
+		return fail(p, XML_ERR_EXPAND, "entity expansion produced "
+			    "more replacement text than the byte cap allows");
+	if (p->nfr == p->frcap) {
+		size_t c = p->frcap ? p->frcap * 2 : 16;
+		frame *v = realloc(p->fr, c * sizeof *v);
+		if (!v)
+			return fail(p, XML_ERR_MEM, NULL);
+		p->fr = v;
+		p->frcap = c;
+	}
+	f.b = p->b;
+	f.n = p->n;
+	f.i = p->i;
+	f.eidx = eidx;
+	f.sdepth = p->stack.n;
+	if (p->nfr == 0)
+		p->refpos = refpos;
+	p->fr[p->nfr++] = f;
+	p->b = e->text;
+	p->n = e->textn;
+	p->i = 0;
+	return 1;
+}
+
+/* 4.3.2 Well-Formed Parsed Entity: an entity included in content has to match
+ * the content production, which means every element it opens it also closes.
+ * The element stack depth at the push is the whole check. */
+static int frame_pop(P *p)
+{
+	frame f = p->fr[--p->nfr];
+
+	p->b = f.b;
+	p->n = f.n;
+	p->i = f.i;
+	if (p->stack.n != f.sdepth)
+		return fail(p, XML_ERR_WFC, "an entity must contain whole "
+			    "elements: it opened or closed a tag it did not "
+			    "match (4.3.2 Well-Formed Parsed Entity)");
+	return 1;
+}
+
+/* Pop every frame that has been read to its end, down to `base`. */
+static int frames_sync(P *p, size_t base)
+{
+	while (p->i >= p->n && p->nfr > base)
+		if (!frame_pop(p))
+			return 0;
+	return 1;
+}
+
+/* WFC: Entity Declared is relaxed for a non-validating processor that did not
+ * read everything which could carry a declaration.  4.1 states the condition
+ * exactly: the constraint binds for a document with no DTD, for a document
+ * whose only DTD is an internal subset containing no parameter-entity
+ * references, and for any document with standalone="yes".  Otherwise a
+ * declaration this parser never saw might exist, and inventing an error for
+ * it would be a claim about the document that xmlc cannot support. */
+static int strict_decl(P *p)
+{
+	return p->standalone || (!p->has_extsubset && !p->saw_pe);
 }
 
 
@@ -320,12 +534,12 @@ static int eat_eq(P *p)
 /* Defined below with the other reference machinery: attribute values and
  * content both contain references, and the two callers sit on either side of
  * it. */
-static int parse_reference(P *p);
+static int parse_reference(P *p, int inatt);
 
 static int scan_attvalue(P *p, slice *out)
 {
 	int q = byte_at(p, 0);
-	size_t start;
+	size_t start, base = p->nfr;
 
 	if (q != '"' && q != '\'')
 		return fail(p, XML_ERR_SYNTAX, "attribute value must be "
@@ -334,7 +548,11 @@ static int scan_attvalue(P *p, slice *out)
 	start = p->i;
 	for (;;) {
 		int w;
-		long c = cur(p, &w);
+		long c;
+
+		if (!frames_sync(p, base))
+			return 0;
+		c = cur(p, &w);
 
 		if (c == -2)
 			return fail(p, XML_ERR_SYNTAX, "unterminated attribute "
@@ -343,18 +561,22 @@ static int scan_attvalue(P *p, slice *out)
 			return fail(p, XML_ERR_UTF8, NULL);
 		if (!is_char(c))
 			return fail(p, XML_ERR_CHAR, NULL);
-		if (c == q)
+		/* A quote inside an included entity is a character of the
+		 * value, not the end of it.  Only the frame the opening quote
+		 * came from can close it. */
+		if (c == q && p->nfr == base)
 			break;
 		if (c == '<')
 			return fail(p, XML_ERR_WFC, "'<' in an attribute value "
-				    "(WFC: No < in Attribute Values)");
+				    "(WFC: No < in Attribute Values); an entity "
+				    "included here may not contain one either");
 		if (c == '&') {
-			/* The value slice stays the raw bytes: this parser
-			 * checks well-formedness and does not hand anyone a
-			 * decoded value, so expanding here would produce a
-			 * string nothing reads. Duplicate-attribute detection
-			 * compares names, not values. */
-			if (!parse_reference(p))
+			/* The value slice stays the raw bytes of the literal:
+			 * this parser checks well-formedness and does not hand
+			 * anyone a decoded value, so materialising one here
+			 * would produce a string nothing reads. Duplicate-
+			 * attribute detection compares names, not values. */
+			if (!parse_reference(p, 1))
 				return 0;
 			continue;
 		}
@@ -436,6 +658,14 @@ static int parse_etag(P *p)
 			    "end tag [42]");
 	if (p->stack.n == 0)
 		return fail(p, XML_ERR_SYNTAX, "end tag with no open element");
+	/* 4.3.2 Well-Formed Parsed Entity.  Matching depths at the end of the
+	 * entity are not enough: '</foo><foo>' leaves the stack exactly as it
+	 * found it and is still not content.  The stack may never drop BELOW
+	 * where the entity started. */
+	if (p->nfr && p->stack.n <= p->fr[p->nfr - 1].sdepth)
+		return fail(p, XML_ERR_WFC, "an entity may not close an "
+			    "element it did not open (4.3.2 Well-Formed "
+			    "Parsed Entity)");
 	/* WFC: Element Type Match. */
 	if (!sl_eq(p->stack.v[p->stack.n - 1], name))
 		return fail(p, XML_ERR_WFC, "end tag does not match the open "
@@ -479,14 +709,13 @@ static int parse_chardata(P *p)
  *                     not appear in an XML document at all.
  *   Entity Declared   a reference to an entity nobody declared is an error.
  *                     With no DTD the five predefined entities are the only
- *                     declared ones, and this parser only ever reaches here
- *                     with no DTD, because a doctype declines the whole
- *                     document before any content is read. That is why the
- *                     refusal below can be unconditional; if the internal
- *                     subset is ever implemented, this is the first thing
- *                     that has to learn about it.
+ *                     declared ones.  With an internal subset the table
+ *                     decides, and 4.1 relaxes the constraint entirely when
+ *                     a declaration could be sitting somewhere this parser
+ *                     did not read -- see strict_decl().
  *
- * Entered with p->i on the '&'. */
+ * Entered with p->i on the '&'.  inatt says the reference is inside an
+ * attribute value, where WFC: No External Entity References also applies. */
 static int is_predef(slice n)
 {
 	static const char *const e[] = { "amp", "lt", "gt", "apos", "quot" };
@@ -498,53 +727,67 @@ static int is_predef(slice n)
 	return 0;
 }
 
-static int parse_reference(P *p)
+/* [66] CharRef ::= '&#' [0-9]+ ';' | '&#x' [0-9a-fA-F]+ ';'
+ *
+ * Entered with p->i on the '#'.  On success *out holds the code point, which
+ * has already been checked against [2] Char. */
+static int scan_charref(P *p, long *out)
+{
+	long v = 0;
+	int hex = 0, digits = 0, overflow = 0;
+
+	p->i += 1;			/* '#' */
+	if (byte_at(p, 0) == 'x') {
+		hex = 1;
+		p->i += 1;
+	}
+	for (;;) {
+		int c = byte_at(p, 0), d;
+
+		if (c >= '0' && c <= '9')
+			d = c - '0';
+		else if (hex && c >= 'a' && c <= 'f')
+			d = c - 'a' + 10;
+		else if (hex && c >= 'A' && c <= 'F')
+			d = c - 'A' + 10;
+		else
+			break;
+		/* Clamped rather than wrapped: a reference to some enormous
+		 * number is not a Char either way, and signed overflow would
+		 * be undefined. */
+		if (v <= 0x10FFFF)
+			v = v * (hex ? 16 : 10) + d;
+		else
+			overflow = 1;
+		digits++;
+		p->i += 1;
+	}
+	if (digits == 0)
+		return fail(p, XML_ERR_SYNTAX, "a character reference needs at "
+			    "least one digit [66]");
+	if (!eat(p, ";"))
+		return fail(p, XML_ERR_SYNTAX, "expected ';' at the end of a "
+			    "character reference [66]");
+	if (overflow || !is_char(v))
+		return fail(p, XML_ERR_WFC, "character reference to a code "
+			    "point that is not a Char (WFC: Legal Character) "
+			    "[66]");
+	*out = v;
+	return 1;
+}
+
+static int parse_reference(P *p, int inatt)
 {
 	slice name;
+	size_t refpos = p->nfr ? p->refpos : p->i;
+	size_t ei;
 
 	p->i += 1;			/* '&' */
 
 	if (byte_at(p, 0) == '#') {
-		long v = 0;
-		int hex = 0, digits = 0, overflow = 0;
+		long cp;
 
-		p->i += 1;
-		if (byte_at(p, 0) == 'x') {
-			hex = 1;
-			p->i += 1;
-		}
-		for (;;) {
-			int c = byte_at(p, 0), d;
-
-			if (c >= '0' && c <= '9')
-				d = c - '0';
-			else if (hex && c >= 'a' && c <= 'f')
-				d = c - 'a' + 10;
-			else if (hex && c >= 'A' && c <= 'F')
-				d = c - 'A' + 10;
-			else
-				break;
-			/* Clamped rather than wrapped: a reference to some
-			 * enormous number is not a Char either way, and
-			 * signed overflow would be undefined. */
-			if (v <= 0x10FFFF)
-				v = v * (hex ? 16 : 10) + d;
-			else
-				overflow = 1;
-			digits++;
-			p->i += 1;
-		}
-		if (digits == 0)
-			return fail(p, XML_ERR_SYNTAX, "a character reference "
-				    "needs at least one digit [66]");
-		if (!eat(p, ";"))
-			return fail(p, XML_ERR_SYNTAX, "expected ';' at the "
-				    "end of a character reference [66]");
-		if (overflow || !is_char(v))
-			return fail(p, XML_ERR_WFC, "character reference to a "
-				    "code point that is not a Char (WFC: Legal "
-				    "Character) [66]");
-		return 1;
+		return scan_charref(p, &cp);
 	}
 
 	if (!scan_name(p, &name))
@@ -552,11 +795,41 @@ static int parse_reference(P *p)
 	if (!eat(p, ";"))
 		return fail(p, XML_ERR_SYNTAX, "expected ';' at the end of an "
 			    "entity reference [68]");
-	if (is_predef(name))
+	/* This runs for a default attribute value in the DTD as well, and it
+	 * has to.  The suite settled three questions here at once: a default
+	 * may not reference an external entity (eduni rmt-e3e-12), may not
+	 * reference an unparsed one (not-wf-sa-084), and may not reference an
+	 * entity declared LATER in the subset (ibm68n07, not-wf-sa-180).  An
+	 * earlier version of this function treated every reference inside the
+	 * DTD as bypassed and syntax-checked only, which accepted all four of
+	 * those documents. */
+	ei = ent_find(p, name, 0);
+	if (ei == ENT_NONE) {
+		if (is_predef(name))
+			return 1;
+		if (!strict_decl(p)) {
+			p->unread = 1;
+			return 1;
+		}
+		return fail(p, XML_ERR_WFC, "reference to an entity that was "
+			    "never declared; with no doctype only amp, lt, gt, "
+			    "apos and quot are declared (WFC: Entity Declared) "
+			    "[68]");
+	}
+	if (p->ent[ei].unparsed)
+		return fail(p, XML_ERR_WFC, "reference to an unparsed entity, "
+			    "which may only be the value of an ENTITY "
+			    "attribute (WFC: Parsed Entity) [68]");
+	if (p->ent[ei].external) {
+		if (inatt)
+			return fail(p, XML_ERR_WFC, "reference to an external "
+				    "entity in an attribute value (WFC: No "
+				    "External Entity References) [68]");
+		/* Not fetched, by design: see the Non-goals in PLAN.md. */
+		p->unread = 1;
 		return 1;
-	return fail(p, XML_ERR_WFC, "reference to an entity that was never "
-		    "declared; with no doctype only amp, lt, gt, apos and quot "
-		    "are declared (WFC: Entity Declared) [68]");
+	}
+	return frame_push(p, ei, refpos);
 }
 
 /* [15] Comment ::= '<!--' ((Char - '-') | ('-' (Char - '-')))* '-->'
@@ -666,6 +939,805 @@ static int parse_cdata(P *p)
 	}
 }
 
+/* ============================ the document type declaration [28] =========
+ *
+ * Everything from here to parse_doctype is the internal subset.  Three things
+ * about it are easy to get wrong and are called out where they happen:
+ *
+ *   - a parameter-entity reference in the internal subset may only stand
+ *     where a whole markup declaration could (WFC: PEs in Internal Subset);
+ *   - a conditional section may only appear in the EXTERNAL subset, so
+ *     '<![INCLUDE[' here is not well-formed rather than unimplemented;
+ *   - what this parser does NOT read -- the external subset, external
+ *     parameter entities -- relaxes WFC: Entity Declared instead of being
+ *     invented.  See strict_decl().
+ */
+
+/* A growable byte buffer, used only to build entity replacement text. */
+typedef struct {
+	unsigned char *b;
+	size_t n, cap;
+} buf;
+
+static int buf_add(buf *o, const unsigned char *s, size_t n)
+{
+	if (o->n + n > o->cap) {
+		size_t c = o->cap ? o->cap : 64;
+		unsigned char *nb;
+		while (c < o->n + n)
+			c *= 2;
+		nb = realloc(o->b, c);
+		if (!nb)
+			return 0;
+		o->b = nb;
+		o->cap = c;
+	}
+	if (n)
+		memcpy(o->b + o->n, s, n);
+	o->n += n;
+	return 1;
+}
+
+/* [7] Nmtoken ::= (NameChar)+  -- an enumerated attribute type lists these,
+ * not Names, so '1' and '-x' are legal members of an enumeration. */
+static int scan_nmtoken(P *p)
+{
+	int any = 0;
+
+	for (;;) {
+		int w;
+		long c = cur(p, &w);
+
+		if (c == -1)
+			return fail(p, XML_ERR_UTF8, NULL);
+		if (c < 0 || !is_namechar(c))
+			break;
+		p->i += (size_t)w;
+		any = 1;
+	}
+	if (!any)
+		return fail(p, XML_ERR_NAME, "expected a Nmtoken [7]");
+	return 1;
+}
+
+/* [11] SystemLiteral ::= ('"' [^"]* '"') | ("'" [^']* "'") */
+static int scan_systemliteral(P *p)
+{
+	int q = byte_at(p, 0);
+
+	if (q != '"' && q != '\'')
+		return fail(p, XML_ERR_SYNTAX, "a system identifier must be "
+			    "quoted [11]");
+	p->i++;
+	for (;;) {
+		int w;
+		long c = cur(p, &w);
+
+		if (c == -2)
+			return fail(p, XML_ERR_SYNTAX, "unterminated system "
+				    "identifier [11]");
+		if (c == -1)
+			return fail(p, XML_ERR_UTF8, NULL);
+		if (!is_char(c))
+			return fail(p, XML_ERR_CHAR, NULL);
+		p->i += (size_t)w;
+		if (c == q)
+			return 1;
+	}
+}
+
+/* [13] PubidChar ::= #x20 | #xD | #xA | [a-zA-Z0-9] | [-'()+,./:=?;!*#@$_%]
+ * The apostrophe is a PubidChar but cannot appear in an apostrophe-delimited
+ * literal, which is the whole content of [12]'s second alternative. */
+static int is_pubid(int c, int q)
+{
+	if (c == '\'')
+		return q != '\'';
+	return c == 0x20 || c == 0xD || c == 0xA ||
+	    (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+	    (c >= '0' && c <= '9') ||
+	    (c != 0 && c < 0x80 && strchr("-()+,./:=?;!*#@$_%", c) != NULL);
+}
+
+/* [12] PubidLiteral.  Every PubidChar is ASCII, so this reads bytes. */
+static int scan_pubidliteral(P *p)
+{
+	int q = byte_at(p, 0);
+
+	if (q != '"' && q != '\'')
+		return fail(p, XML_ERR_SYNTAX, "a public identifier must be "
+			    "quoted [12]");
+	p->i++;
+	for (;;) {
+		int c = byte_at(p, 0);
+
+		if (c < 0)
+			return fail(p, XML_ERR_SYNTAX, "unterminated public "
+				    "identifier [12]");
+		p->i++;
+		if (c == q)
+			return 1;
+		if (!is_pubid(c, q))
+			return fail(p, XML_ERR_SYNTAX, "character not allowed "
+				    "in a public identifier [13]");
+	}
+}
+
+/* [75] ExternalID ::= 'SYSTEM' S SystemLiteral
+ *                   | 'PUBLIC' S PubidLiteral S SystemLiteral */
+static int parse_externalid(P *p)
+{
+	if (eat(p, "SYSTEM")) {
+		if (!skip_s(p))
+			return fail(p, XML_ERR_SYNTAX, "expected whitespace "
+				    "after SYSTEM [75]");
+		return scan_systemliteral(p);
+	}
+	if (eat(p, "PUBLIC")) {
+		if (!skip_s(p))
+			return fail(p, XML_ERR_SYNTAX, "expected whitespace "
+				    "after PUBLIC [75]");
+		if (!scan_pubidliteral(p))
+			return 0;
+		if (!skip_s(p))
+			return fail(p, XML_ERR_SYNTAX, "expected whitespace "
+				    "before the system identifier [75]");
+		return scan_systemliteral(p);
+	}
+	return fail(p, XML_ERR_SYNTAX, "expected SYSTEM or PUBLIC [75]");
+}
+
+/* [69] PEReference ::= '%' Name ';' inside an entity value, appended to the
+ * text being built.  The referenced entity's own text was fully expanded when
+ * IT was declared, so there is nothing recursive left here -- and a parameter
+ * entity cannot be written in terms of itself, because it does not enter the
+ * table until its own value has been built. */
+static int peref_into(P *p, buf *o)
+{
+	slice nm;
+	size_t ei;
+
+	p->i++;				/* '%' */
+	if (!scan_name(p, &nm))
+		return 0;
+	if (!eat(p, ";"))
+		return fail(p, XML_ERR_SYNTAX, "expected ';' at the end of a "
+			    "parameter-entity reference [69]");
+	p->saw_pe = 1;
+	ei = ent_find(p, nm, 1);
+	if (ei == ENT_NONE) {
+		if (strict_decl(p))
+			return fail(p, XML_ERR_WFC, "reference to a parameter "
+				    "entity that was never declared (WFC: "
+				    "Entity Declared) [69]");
+		p->unread = 1;
+		return 1;
+	}
+	if (p->ent[ei].external) {
+		p->unread = 1;	/* never fetched, by design */
+		return 1;
+	}
+	p->expanded += p->ent[ei].textn;
+	if (p->expanded > XMLC_MAX_EXPANSION)
+		return fail(p, XML_ERR_EXPAND, "parameter-entity expansion "
+			    "produced more text than the byte cap allows");
+	if (!buf_add(o, p->ent[ei].text, p->ent[ei].textn))
+		return fail(p, XML_ERR_MEM, NULL);
+	return 1;
+}
+
+/* Append one code point as UTF-8. */
+static int u8_put(buf *o, long c)
+{
+	unsigned char t[4];
+	size_t n;
+
+	if (c < 0x80) {
+		t[0] = (unsigned char)c;
+		n = 1;
+	} else if (c < 0x800) {
+		t[0] = (unsigned char)(0xC0 | (c >> 6));
+		t[1] = (unsigned char)(0x80 | (c & 0x3F));
+		n = 2;
+	} else if (c < 0x10000) {
+		t[0] = (unsigned char)(0xE0 | (c >> 12));
+		t[1] = (unsigned char)(0x80 | ((c >> 6) & 0x3F));
+		t[2] = (unsigned char)(0x80 | (c & 0x3F));
+		n = 3;
+	} else {
+		t[0] = (unsigned char)(0xF0 | (c >> 18));
+		t[1] = (unsigned char)(0x80 | ((c >> 12) & 0x3F));
+		t[2] = (unsigned char)(0x80 | ((c >> 6) & 0x3F));
+		t[3] = (unsigned char)(0x80 | (c & 0x3F));
+		n = 4;
+	}
+	return buf_add(o, t, n);
+}
+
+/* [9] EntityValue ::= '"' ([^%&"] | PEReference | Reference)* '"' | "'" ...
+ *
+ * Builds the replacement text, which 4.5 defines precisely: character
+ * references and parameter-entity references are expanded here, general-
+ * entity references are left as written and resolved when the entity is
+ * included.
+ *
+ * The expansion of character references is not a detail.  I built this the
+ * other way first -- store the literal and let the inclusion re-scan the
+ * character references -- reasoning that it kept '<' out of the markup.  It
+ * does, and that is the bug: 4.5 says the replacement text of
+ * '<!ENTITY e "&#60;foo>">' really is '<foo>', and including it really does
+ * open a tag that is never closed.  The suite rejected my version through
+ * not-wf-sa-103, -090, -092 and errata-4e 140/141, six cases pointing at the
+ * same wrong model.  It is also why 4.6 declares lt as '&#38;#60;' and not
+ * as '&#60;': the double escape is what survives this expansion.
+ *
+ * A '&' that does not begin a Reference is not allowed either: [9]'s first
+ * alternative is [^%&"], so the ampersand has only the one meaning. */
+static int scan_entityvalue(P *p, buf *o)
+{
+	int q = byte_at(p, 0);
+
+	if (q != '"' && q != '\'')
+		return fail(p, XML_ERR_SYNTAX, "an entity value must be "
+			    "quoted [9]");
+	p->i++;
+	for (;;) {
+		int w;
+		long c = cur(p, &w);
+
+		if (c == -2)
+			return fail(p, XML_ERR_SYNTAX, "unterminated entity "
+				    "value [9]");
+		if (c == -1)
+			return fail(p, XML_ERR_UTF8, NULL);
+		if (!is_char(c))
+			return fail(p, XML_ERR_CHAR, NULL);
+		if (c == q) {
+			p->i++;
+			return 1;
+		}
+		if (c == '&') {
+			if (byte_at(p, 1) == '#') {
+				long cp;
+
+				p->i++;
+				if (!scan_charref(p, &cp))
+					return 0;
+				if (!u8_put(o, cp))
+					return fail(p, XML_ERR_MEM, NULL);
+			} else {
+				slice nm;
+				size_t start = p->i;
+
+				p->i++;
+				if (!scan_name(p, &nm))
+					return 0;
+				if (!eat(p, ";"))
+					return fail(p, XML_ERR_SYNTAX,
+						    "expected ';' at the end "
+						    "of an entity reference "
+						    "in an entity value [68] "
+						    "[9]");
+				if (!buf_add(o, p->b + start, p->i - start))
+					return fail(p, XML_ERR_MEM, NULL);
+			}
+			continue;
+		}
+		if (c == '%') {
+			/* WFC: PEs in Internal Subset.  Directly in the
+			 * internal subset a parameter-entity reference may
+			 * only replace a whole markup declaration, and an
+			 * entity value is inside one.  Inside the replacement
+			 * text of a parameter entity the restriction does not
+			 * apply, which is why this asks the frame stack and
+			 * not a flag. */
+			if (p->nfr == 0)
+				return fail(p, XML_ERR_WFC, "a parameter-"
+					    "entity reference may not appear "
+					    "inside a markup declaration in "
+					    "the internal subset (WFC: PEs in "
+					    "Internal Subset) [28a]");
+			if (!peref_into(p, o))
+				return 0;
+			continue;
+		}
+		if (!buf_add(o, p->b + p->i, (size_t)w))
+			return fail(p, XML_ERR_MEM, NULL);
+		p->i += (size_t)w;
+	}
+}
+
+/* [70] EntityDecl ::= GEDecl | PEDecl
+ * [71] GEDecl ::= '<!ENTITY' S Name S EntityDef S? '>'
+ * [72] PEDecl ::= '<!ENTITY' S '%' S Name S PEDef S? '>'
+ * [73] EntityDef ::= EntityValue | (ExternalID NDataDecl?)
+ * [76] NDataDecl ::= S 'NDATA' S Name */
+static int parse_entitydecl(P *p)
+{
+	slice nm, nota;
+	buf o;
+	int pe = 0, q;
+	size_t save;
+
+	p->i += 8;			/* '<!ENTITY' */
+	if (!skip_s(p))
+		return fail(p, XML_ERR_SYNTAX, "expected whitespace after "
+			    "'<!ENTITY' [71]");
+	if (byte_at(p, 0) == '%') {
+		p->i++;
+		if (!skip_s(p))
+			return fail(p, XML_ERR_SYNTAX, "expected whitespace "
+				    "after '%' in a parameter-entity "
+				    "declaration [72]");
+		pe = 1;
+	}
+	if (!scan_name(p, &nm))
+		return 0;
+	if (!skip_s(p))
+		return fail(p, XML_ERR_SYNTAX, "expected whitespace after an "
+			    "entity name [71]");
+	q = byte_at(p, 0);
+	if (q == '"' || q == '\'') {
+		memset(&o, 0, sizeof o);
+		if (!scan_entityvalue(p, &o)) {
+			free(o.b);
+			return 0;
+		}
+		/* Shrink to the exact length.  Slack at the end of this
+		 * allocation would let a read one byte past the replacement
+		 * text land inside the same malloc block, where ASan cannot
+		 * see it -- which is how a sanitizer run comes out clean over
+		 * an area smaller than it looks. */
+		{
+			unsigned char *nb = realloc(o.b, o.n ? o.n : 1);
+			if (nb)
+				o.b = nb;
+		}
+		if (!ent_add(p, nm, pe, o.b, o.n, 0, 0))
+			return fail(p, XML_ERR_MEM, NULL);
+	} else {
+		int unparsed = 0;
+
+		if (!parse_externalid(p))
+			return 0;
+		save = p->i;
+		if (skip_s(p) && eat(p, "NDATA")) {
+			if (pe)
+				return fail(p, XML_ERR_SYNTAX, "NDATA is not "
+					    "allowed on a parameter entity "
+					    "[74]");
+			if (!skip_s(p))
+				return fail(p, XML_ERR_SYNTAX, "expected "
+					    "whitespace after NDATA [76]");
+			if (!scan_name(p, &nota))
+				return 0;
+			unparsed = 1;
+		} else {
+			p->i = save;
+		}
+		if (!ent_add(p, nm, pe, NULL, 0, 1, unparsed))
+			return fail(p, XML_ERR_MEM, NULL);
+	}
+	skip_s(p);
+	if (!eat(p, ">"))
+		return fail(p, XML_ERR_SYNTAX, "expected '>' at the end of an "
+			    "entity declaration [71]");
+	return 1;
+}
+
+/* [82] NotationDecl ::= '<!NOTATION' S Name S (ExternalID | PublicID) S? '>'
+ * [83] PublicID ::= 'PUBLIC' S PubidLiteral
+ *
+ * This is the one place a public identifier may stand without a system
+ * identifier after it, so ExternalID cannot simply be reused. */
+static int parse_notationdecl(P *p)
+{
+	slice nm;
+	size_t save;
+
+	p->i += 10;			/* '<!NOTATION' */
+	if (!skip_s(p))
+		return fail(p, XML_ERR_SYNTAX, "expected whitespace after "
+			    "'<!NOTATION' [82]");
+	if (!scan_name(p, &nm))
+		return 0;
+	if (!skip_s(p))
+		return fail(p, XML_ERR_SYNTAX, "expected whitespace after a "
+			    "notation name [82]");
+	if (eat(p, "SYSTEM")) {
+		if (!skip_s(p))
+			return fail(p, XML_ERR_SYNTAX, "expected whitespace "
+				    "after SYSTEM [75]");
+		if (!scan_systemliteral(p))
+			return 0;
+	} else if (eat(p, "PUBLIC")) {
+		if (!skip_s(p))
+			return fail(p, XML_ERR_SYNTAX, "expected whitespace "
+				    "after PUBLIC [83]");
+		if (!scan_pubidliteral(p))
+			return 0;
+		save = p->i;
+		if (skip_s(p) &&
+		    (byte_at(p, 0) == '"' || byte_at(p, 0) == '\'')) {
+			if (!scan_systemliteral(p))
+				return 0;
+		} else {
+			p->i = save;
+		}
+	} else {
+		return fail(p, XML_ERR_SYNTAX, "expected SYSTEM or PUBLIC in a "
+			    "notation declaration [82]");
+	}
+	skip_s(p);
+	if (!eat(p, ">"))
+		return fail(p, XML_ERR_SYNTAX, "expected '>' at the end of a "
+			    "notation declaration [82]");
+	return 1;
+}
+
+/* [48] cp ::= (Name | choice | seq) ('?' | '*' | '+')?
+ * [49] choice ::= '(' S? cp ( S? '|' S? cp )+ S? ')'
+ * [50] seq    ::= '(' S? cp ( S? ',' S? cp )* S? ')'
+ *
+ * [49] and [50] differ only in their separator, and the separator may not be
+ * mixed inside one group: '(a|b,c)' is not a content model. */
+static int parse_cp(P *p, int depth);
+
+static int parse_group(P *p, int depth)
+{
+	int sep = 0, c;
+
+	if (depth > XMLC_MAX_MODEL_DEPTH)
+		return fail(p, XML_ERR_DEPTH, "content model nested too "
+			    "deeply [47]");
+	if (!eat(p, "("))
+		return fail(p, XML_ERR_SYNTAX, "expected '(' in a content "
+			    "model [47]");
+	skip_s(p);
+	if (!parse_cp(p, depth + 1))
+		return 0;
+	for (;;) {
+		skip_s(p);
+		c = byte_at(p, 0);
+		if (c == ')') {
+			p->i++;
+			return 1;
+		}
+		if (c != '|' && c != ',')
+			return fail(p, XML_ERR_SYNTAX, "expected '|', ',' or "
+				    "')' in a content model [49] [50]");
+		if (sep && c != sep)
+			return fail(p, XML_ERR_SYNTAX, "a content model group "
+				    "is all '|' or all ',', never both [49] "
+				    "[50]");
+		sep = c;
+		p->i++;
+		skip_s(p);
+		if (!parse_cp(p, depth + 1))
+			return 0;
+	}
+}
+
+static int parse_cp(P *p, int depth)
+{
+	slice nm;
+	int c;
+
+	if (byte_at(p, 0) == '(') {
+		if (!parse_group(p, depth))
+			return 0;
+	} else if (!scan_name(p, &nm)) {
+		return 0;
+	}
+	c = byte_at(p, 0);
+	if (c == '?' || c == '*' || c == '+')
+		p->i++;
+	return 1;
+}
+
+/* [46] contentspec ::= 'EMPTY' | 'ANY' | Mixed | children
+ * [51] Mixed ::= '(' S? '#PCDATA' (S? '|' S? Name)* S? ')*'
+ *              | '(' S? '#PCDATA' S? ')' */
+static int parse_contentspec(P *p)
+{
+	size_t save;
+	int c, named = 0;
+
+	if (eat(p, "EMPTY") || eat(p, "ANY"))
+		return 1;
+	if (byte_at(p, 0) != '(')
+		return fail(p, XML_ERR_SYNTAX, "expected EMPTY, ANY or a "
+			    "content model [46]");
+	save = p->i;
+	p->i++;
+	skip_s(p);
+	if (eat(p, "#PCDATA")) {
+		for (;;) {
+			slice nm;
+
+			skip_s(p);
+			if (!eat(p, "|"))
+				break;
+			skip_s(p);
+			if (!scan_name(p, &nm))
+				return 0;
+			named = 1;
+		}
+		if (!eat(p, ")"))
+			return fail(p, XML_ERR_SYNTAX, "expected ')' at the "
+				    "end of a mixed content model [51]");
+		/* '(#PCDATA|a)' must be starred; '(#PCDATA)' need not be. */
+		if (named && !eat(p, "*"))
+			return fail(p, XML_ERR_SYNTAX, "a mixed content model "
+				    "that names elements must end ')*' [51]");
+		if (!named)
+			eat(p, "*");
+		return 1;
+	}
+	p->i = save;
+	if (!parse_group(p, 0))
+		return 0;
+	c = byte_at(p, 0);
+	if (c == '?' || c == '*' || c == '+')
+		p->i++;
+	return 1;
+}
+
+/* [45] elementdecl ::= '<!ELEMENT' S Name S contentspec S? '>' */
+static int parse_elementdecl(P *p)
+{
+	slice nm;
+
+	p->i += 9;			/* '<!ELEMENT' */
+	if (!skip_s(p))
+		return fail(p, XML_ERR_SYNTAX, "expected whitespace after "
+			    "'<!ELEMENT' [45]");
+	if (!scan_name(p, &nm))
+		return 0;
+	if (!skip_s(p))
+		return fail(p, XML_ERR_SYNTAX, "expected whitespace after an "
+			    "element name [45]");
+	if (!parse_contentspec(p))
+		return 0;
+	skip_s(p);
+	if (!eat(p, ">"))
+		return fail(p, XML_ERR_SYNTAX, "expected '>' at the end of an "
+			    "element declaration [45]");
+	return 1;
+}
+
+/* [54] AttType ::= StringType | TokenizedType | EnumeratedType
+ * [56] TokenizedType ::= 'ID'|'IDREF'|'IDREFS'|'ENTITY'|'ENTITIES'
+ *                      | 'NMTOKEN'|'NMTOKENS'
+ * [58] NotationType  ::= 'NOTATION' S '(' S? Name (S? '|' S? Name)* S? ')'
+ * [59] Enumeration   ::= '(' S? Nmtoken (S? '|' S? Nmtoken)* S? ')' */
+static int parse_atttype(P *p)
+{
+	/* Longest first: 'ID' is a prefix of 'IDREF' and 'IDREF' of 'IDREFS',
+	 * so a shortest-first scan would accept 'IDREFS' as ID followed by
+	 * rubbish.  [53] requires S after the type, which is what finally
+	 * rejects 'IDX'. */
+	static const char *const tok[] = {
+		"CDATA", "IDREFS", "IDREF", "ID", "ENTITIES", "ENTITY",
+		"NMTOKENS", "NMTOKEN"
+	};
+	size_t k;
+	slice nm;
+
+	for (k = 0; k < sizeof tok / sizeof *tok; k++)
+		if (eat(p, tok[k]))
+			return 1;
+	if (eat(p, "NOTATION")) {
+		if (!skip_s(p))
+			return fail(p, XML_ERR_SYNTAX, "expected whitespace "
+				    "after NOTATION [58]");
+		if (!eat(p, "("))
+			return fail(p, XML_ERR_SYNTAX, "expected '(' after "
+				    "NOTATION [58]");
+		do {
+			skip_s(p);
+			if (!scan_name(p, &nm))
+				return 0;
+			skip_s(p);
+		} while (eat(p, "|"));
+		if (!eat(p, ")"))
+			return fail(p, XML_ERR_SYNTAX, "expected ')' at the "
+				    "end of a notation type [58]");
+		return 1;
+	}
+	if (byte_at(p, 0) == '(') {
+		p->i++;
+		do {
+			skip_s(p);
+			if (!scan_nmtoken(p))
+				return 0;
+			skip_s(p);
+		} while (eat(p, "|"));
+		if (!eat(p, ")"))
+			return fail(p, XML_ERR_SYNTAX, "expected ')' at the "
+				    "end of an enumeration [59]");
+		return 1;
+	}
+	return fail(p, XML_ERR_SYNTAX, "expected an attribute type [54]");
+}
+
+/* [60] DefaultDecl ::= '#REQUIRED' | '#IMPLIED' | (('#FIXED' S)? AttValue) */
+static int parse_defaultdecl(P *p)
+{
+	slice v;
+
+	if (eat(p, "#REQUIRED") || eat(p, "#IMPLIED"))
+		return 1;
+	if (eat(p, "#FIXED") && !skip_s(p))
+		return fail(p, XML_ERR_SYNTAX, "expected whitespace after "
+			    "#FIXED [60]");
+	/* shortcut: the default value is parsed and discarded.  Supplying it
+	 * to the document is the ATTLIST-defaults plan item, and it is only
+	 * observable once there is a canonical dump to print it in. */
+	return scan_attvalue(p, &v);
+}
+
+/* [52] AttlistDecl ::= '<!ATTLIST' S Name AttDef* S? '>'
+ * [53] AttDef ::= S Name S AttType S DefaultDecl */
+static int parse_attlist(P *p)
+{
+	slice nm;
+
+	p->i += 9;			/* '<!ATTLIST' */
+	if (!skip_s(p))
+		return fail(p, XML_ERR_SYNTAX, "expected whitespace after "
+			    "'<!ATTLIST' [52]");
+	if (!scan_name(p, &nm))
+		return 0;
+	for (;;) {
+		int sp = skip_s(p);
+
+		if (eat(p, ">"))
+			return 1;
+		if (!sp)
+			return fail(p, XML_ERR_SYNTAX, "expected whitespace or "
+				    "'>' in an attribute-list declaration "
+				    "[52]");
+		if (!scan_name(p, &nm))
+			return 0;
+		if (!skip_s(p))
+			return fail(p, XML_ERR_SYNTAX, "expected whitespace "
+				    "after an attribute name [53]");
+		if (!parse_atttype(p))
+			return 0;
+		if (!skip_s(p))
+			return fail(p, XML_ERR_SYNTAX, "expected whitespace "
+				    "before the default declaration [53]");
+		if (!parse_defaultdecl(p))
+			return 0;
+	}
+}
+
+/* [28b] intSubset ::= (markupdecl | DeclSep)*
+ * [29]  markupdecl ::= elementdecl | AttlistDecl | EntityDecl | NotationDecl
+ *                    | PI | Comment
+ * [28a] DeclSep ::= PEReference | S
+ *
+ * base is the frame depth of the document itself: a ']' seen inside an
+ * included parameter entity belongs to that entity's text, not to the
+ * subset. */
+static int parse_intsubset(P *p, size_t base)
+{
+	for (;;) {
+		for (;;) {
+			skip_s(p);
+			if (p->i < p->n || p->nfr <= base)
+				break;
+			if (!frame_pop(p))
+				return 0;
+		}
+		if (p->nfr == base && byte_at(p, 0) == ']')
+			return 1;
+		if (p->i >= p->n)
+			return fail(p, XML_ERR_SYNTAX, "unterminated internal "
+				    "subset: expected ']' [28]");
+		if (byte_at(p, 0) == '%') {
+			slice nm;
+			size_t ei, refpos = p->nfr ? p->refpos : p->i;
+
+			p->i++;
+			if (!scan_name(p, &nm))
+				return 0;
+			if (!eat(p, ";"))
+				return fail(p, XML_ERR_SYNTAX, "expected ';' "
+					    "at the end of a parameter-entity "
+					    "reference [69]");
+			p->saw_pe = 1;
+			ei = ent_find(p, nm, 1);
+			if (ei == ENT_NONE) {
+				if (strict_decl(p))
+					return fail(p, XML_ERR_WFC,
+						    "reference to a parameter "
+						    "entity that was never "
+						    "declared (WFC: Entity "
+						    "Declared) [69]");
+				p->unread = 1;
+				continue;
+			}
+			if (p->ent[ei].external) {
+				p->unread = 1;	/* never fetched, by design */
+				continue;
+			}
+			if (!frame_push(p, ei, refpos))
+				return 0;
+			continue;
+		}
+		if (lit(p, "<!--")) {
+			if (!parse_comment(p))
+				return 0;
+		} else if (lit(p, "<?")) {
+			if (!parse_pi(p))
+				return 0;
+		} else if (lit(p, "<!ELEMENT")) {
+			if (!parse_elementdecl(p))
+				return 0;
+		} else if (lit(p, "<!ATTLIST")) {
+			if (!parse_attlist(p))
+				return 0;
+		} else if (lit(p, "<!ENTITY")) {
+			if (!parse_entitydecl(p))
+				return 0;
+		} else if (lit(p, "<!NOTATION")) {
+			if (!parse_notationdecl(p))
+				return 0;
+		} else if (lit(p, "<![")) {
+			/* [61] conditionalSect is part of extSubsetDecl only.
+			 * In the internal subset it is not well-formed, which
+			 * is a verdict about the document and not a gap in
+			 * this parser. */
+			return fail(p, XML_ERR_SYNTAX, "a conditional section "
+				    "may only appear in the external subset "
+				    "[28b] [61]");
+		} else {
+			return fail(p, XML_ERR_SYNTAX, "expected a markup "
+				    "declaration in the internal subset [28b] "
+				    "[29]");
+		}
+	}
+}
+
+/* [28] doctypedecl ::= '<!DOCTYPE' S Name (S ExternalID)? S? ('[' intSubset
+ *                      ']' S?)? '>'
+ *
+ * The external subset is noted and never fetched.  That is the non-goal in
+ * PLAN.md, and the consequence is not silence: has_extsubset relaxes WFC:
+ * Entity Declared, because a declaration this parser chose not to read might
+ * be sitting in there. */
+static int parse_doctype(P *p)
+{
+	slice nm;
+	size_t base = p->nfr;
+
+	p->i += 9;			/* '<!DOCTYPE' */
+	if (!skip_s(p))
+		return fail(p, XML_ERR_SYNTAX, "expected whitespace after "
+			    "'<!DOCTYPE' [28]");
+	if (!scan_name(p, &nm))
+		return 0;
+	if (skip_s(p) && (lit(p, "SYSTEM") || lit(p, "PUBLIC"))) {
+		if (!parse_externalid(p))
+			return 0;
+		p->has_extsubset = 1;
+		skip_s(p);
+	}
+	if (byte_at(p, 0) == '[') {
+		p->i++;
+		if (!parse_intsubset(p, base))
+			return 0;
+		p->i++;			/* ']' */
+		skip_s(p);
+	}
+	if (!eat(p, ">"))
+		return fail(p, XML_ERR_SYNTAX, "expected '>' at the end of the "
+			    "document type declaration [28]");
+	return 1;
+}
+
 /* A quoted value in the XML declaration.  Returns the contents as a slice.
  * Declaration values are not attribute values: no references, no newline
  * normalisation, and the grammar for each one is its own production. */
@@ -760,11 +1832,38 @@ static int parse_xmldecl(P *p)
 					    "character in an encoding name "
 					    "[81]");
 		}
-		if (!(v.n == 5 && (v.b[0] | 32) == 'u' && (v.b[1] | 32) == 't'
-		      && (v.b[2] | 32) == 'f' && v.b[3] == '-'
-		      && v.b[4] == '8'))
-			return fail(p, XML_ERR_UNIMPL, "only UTF-8 input is "
-				    "implemented [80]");
+		/* US-ASCII is a subset of UTF-8, so it is the same decoder and
+		 * the contract lists both.  Declining it was a bug against
+		 * this project's own contract, and the suite found it: an
+		 * encoding='ASCII' document with a malformed declaration was
+		 * declined instead of rejected.
+		 * shortcut: an ASCII-declared document containing bytes above
+		 * 0x7F is accepted as UTF-8 rather than refused.  The upgrade
+		 * is a byte-range check gated on the declared name. */
+		{
+			static const char *const ok[] = { "utf-8", "us-ascii",
+							  "ascii" };
+			size_t j;
+			int match = 0;
+
+			for (j = 0; j < sizeof ok / sizeof *ok; j++) {
+				size_t l = strlen(ok[j]), m;
+
+				if (v.n != l)
+					continue;
+				for (m = 0; m < l; m++)
+					if ((v.b[m] | 32) != (unsigned char)ok[j][m])
+						break;
+				if (m == l) {
+					match = 1;
+					break;
+				}
+			}
+			if (!match)
+				return fail(p, XML_ERR_UNIMPL, "only UTF-8 and "
+					    "US-ASCII input are implemented "
+					    "[80]");
+		}
 		had_s = skip_s(p) > 0;
 	}
 
@@ -779,6 +1878,10 @@ static int parse_xmldecl(P *p)
 		      (v.n == 2 && memcmp(v.b, "no", 2) == 0)))
 			return fail(p, XML_ERR_SYNTAX, "standalone is 'yes' "
 				    "or 'no' [32]");
+		/* Not decoration: standalone="yes" is a promise that nothing
+		 * outside this file affects it, which switches WFC: Entity
+		 * Declared from relaxed back to binding.  See strict_decl(). */
+		p->standalone = (v.n == 3);
 		skip_s(p);
 	}
 
@@ -796,7 +1899,7 @@ static int parse_xmldecl(P *p)
 static int parse_document(P *p)
 {
 	int empty;
-	int seen_root = 0;
+	int seen_root = 0, seen_doctype = 0;
 
 	/* Comments and PIs are Misc, so they are legal before the root as well
 	 * as inside and after it. That is why the loop tracks whether the root
@@ -829,6 +1932,13 @@ static int parse_document(P *p)
 		return fail(p, XML_ERR_SYNTAX, "a document must have a root "
 			    "element [1]");
 	for (;;) {
+		/* An entity is finished when its replacement text is: pop
+		 * back to whatever was reading before the reference.  This is
+		 * the only place content-level frames go away, which is also
+		 * what stops a tag, a comment or a CDATA section from
+		 * starting in one entity and ending in another. */
+		if (!frames_sync(p, 0))
+			return 0;
 		if (byte_at(p, 0) == '<') {
 			if (lit(p, "<!--")) {
 				if (!parse_comment(p))
@@ -846,10 +1956,29 @@ static int parse_document(P *p)
 			} else if (byte_at(p, 1) == '?') {
 				if (!parse_pi(p))
 					return 0;
+			} else if (lit(p, "<!DOCTYPE")) {
+				/* [1] document ::= prolog element Misc*, and
+				 * [22] prolog puts the doctype before the
+				 * root.  One only, and never inside an
+				 * element. */
+				if (seen_root || p->stack.n)
+					return fail(p, XML_ERR_SYNTAX, "the "
+						    "document type declaration "
+						    "may only appear before "
+						    "the root element [1] "
+						    "[22]");
+				if (seen_doctype)
+					return fail(p, XML_ERR_SYNTAX, "a "
+						    "second document type "
+						    "declaration [22]");
+				seen_doctype = 1;
+				if (!parse_doctype(p))
+					return 0;
 			} else if (byte_at(p, 1) == '!') {
-				return fail(p, XML_ERR_UNIMPL, "the doctype "
-					    "declaration and the internal "
-					    "subset");
+				return fail(p, XML_ERR_SYNTAX, "expected a "
+					    "comment, a CDATA section or a "
+					    "document type declaration after "
+					    "'<!'");
 			} else if (byte_at(p, 1) == '/') {
 				p->i += 2;
 				if (!parse_etag(p))
@@ -877,7 +2006,7 @@ static int parse_document(P *p)
 				return fail(p, XML_ERR_SYNTAX, "a reference "
 					    "may only appear inside an element "
 					    "[43]");
-			if (!parse_reference(p))
+			if (!parse_reference(p, 0))
 				return 0;
 		} else if (byte_at(p, 0) < 0) {
 			return fail(p, XML_ERR_SYNTAX, seen_root
@@ -1100,6 +2229,15 @@ int main(int argc, char **argv)
 	free(buf);
 	free(p.stack.v);
 	free(p.att.v);
+	free(p.fr);
+	{
+		size_t k;
+		for (k = 0; k < p.nent; k++) {
+			free(p.ent[k].name);
+			free(p.ent[k].text);
+		}
+		free(p.ent);
+	}
 	if (ok)
 		return 0;
 	/* 3, not 1, when the production is simply not written yet.

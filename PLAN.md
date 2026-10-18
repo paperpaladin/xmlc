@@ -35,19 +35,23 @@ form so two parses can be diffed byte for byte.
 
 ## Status, as of the last commit
 
-Two of the 42 items below are done: the catalogue-driven scorer and the UTF-8
-reader with the Char/Name classes.  Elements parse well enough to produce a
-verdict, but comments, processing instructions, CDATA, the prolog, references,
-the DTD subset and namespaces do not, so **93% of the in-scope suite is
-declined with exit 3, not judged** (1553 of 1674).  Of the 121 cases
-xmlc does judge, 119 agree with the suite.
+Ten of the items below are done, through the internal DTD subset, entity
+expansion and the expansion caps.  **1 of the 1624 in-scope cases is declined
+with exit 3** (a document declaring `version="1.7"`), down from 1340 of 1627,
+and 1623 are judged.  Of those, 1622 agree with the suite; the one that does
+not is `rmt-e2e-22`, a valid document carrying a UTF-8 BOM, which predates
+this work and belongs to the should-have-caught item.
+
+Still missing: namespaces, the canonical dump, attribute defaults actually
+being supplied to the document, and a UTF-8 BOM.
 
 The sections below describe the finished tool.  They are written in the
 present tense because they are a specification, not a report. Of the four
 oracles, only the first is wired up.  The expat differential, the sanitizer
 truncation sweep and the canonical round-trip are items 36, 39 and 28, all
-still open, and `t/run.sh` does not run them.  Nothing in this repo has
-measured memory safety yet.
+still open, and `t/run.sh` does not run them.  `make test-asan` is clean over
+the whole suite, but the truncation sweep that would make that mean something
+is not written.
 
 ## Hard invariant
 
@@ -134,12 +138,46 @@ Ranked by how little we control them.
 - [x] character and entity references (attribute value normalisation is not observable without a value API, so it is not done)
   - why: `&#x0;`, surrogates and `&#xFFFE;` are invalid characters, not
     invalid syntax, and normalisation is where tab becomes space.
-- [ ] internal DTD subset, entity declarations, entity expansion
+- [x] internal DTD subset, entity declarations, entity expansion
   - why: the expansion machinery is where the frame stack and the
     same-entity nesting constraint come from.
-- [ ] the entity expansion cap
+  - done: [28] doctypedecl, [28b] intSubset and all four markup declarations
+    parsed against their own grammars -- [45]-[51] content models,
+    [52]-[60] ATTLIST, [70]-[76] ENTITY, [82]-[83] NOTATION.  General and
+    parameter entities expand through a frame stack on the heap, so entity
+    nesting costs no C stack, same as element nesting.  Six constraints
+    enforced: Entity Declared with 4.1's relaxations, Parsed Entity, No
+    External Entity References, No Recursion, PEs in Internal Subset, and
+    4.3.2's requirement that an entity contain whole elements.
+  - done: declined went 1340/1627 (82%) -> 1/1624 (0%), judged 287 -> 1623,
+    should-have-caught stayed at 1.
+  - done: the model was wrong first.  Entity replacement text was stored as
+    the literal was written so that the inclusion would re-scan character
+    references, which keeps '<' out of the markup.  4.5 says the opposite:
+    the replacement text of '<!ENTITY e "&#60;foo>">' IS '<foo>'.  Six suite
+    cases caught it (not-wf-sa-103, -090, -092 and errata-4e 140, 141), and
+    4.6 declaring lt as '&#38;#60;' is the same fact written down.
+  - done: bug in the scope filter, not the parser.  classify() tested
+    RECOMMENDATION == "NS1.0" exactly and the catalogue also uses
+    "NS1.0-errata1e", so three namespace cases were being scored against an
+    XML 1.0 parser.  They were invisible while the DOCTYPE was declined.
+  - done: bug against this repo's own contract.  encoding="ASCII" was
+    declined, though the contract lists US-ASCII as readable and it is the
+    same decoder.  The suite found it on ibm23n05, a not-wf document that
+    was declined instead of rejected.
+- [x] the entity expansion cap
   - why: billion laughs.  A depth and a byte cap, with a test that the bomb
     exits 1 instead of being killed by the OOM reaper.
+  - done: 64 frames of depth and 8MB of included replacement text, counted
+    across the document.  Neither alone is enough: the classic bomb is nine
+    deep so the depth cap never fires on it, and a 200-long chain of one-byte
+    entities is tiny so the byte cap never fires on that.
+  - done: three bomb documents in t/run.sh, run with the address space
+    capped at 256MB and a 20 second clock, because a bomb test that passes
+    because the machine had enough memory has tested nothing.  With the byte
+    cap compiled out the general-entity bomb does not finish in 20 seconds
+    and the parameter-entity one allocates 110MB at seven levels.  With the
+    cap it is 80ms and 1.3MB.
 - [ ] ATTLIST, attribute defaults, non-CDATA attribute normalisation
   - why: a non-validating processor still has to supply defaults from the
     internal subset, and the suite's canonical output files prove it.
